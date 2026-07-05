@@ -227,8 +227,11 @@ export async function fetchWithRetry(url, opts = {}) {
       // Non-ok: build a typed error, parsing Retry-After when the status is
       // one we'd retry so the backoff can honor the server's window.
       const transient = retryStatuses.includes(res.status);
+      // Guard `headers.get`: a spec `Response` always has it, but polyfills and
+      // test doubles don't always, and a missing Retry-After header just means
+      // "fall back to the computed backoff".
       const retryAfterMs =
-        transient && respectRetryAfter ? parseRetryAfter(res.headers.get('Retry-After')) : null;
+        transient && respectRetryAfter ? parseRetryAfter(res.headers?.get?.('Retry-After')) : null;
       // Capture a bounded snippet of the error body so consumers can read the
       // server's message (validation text, rate-limit JSON). We're about to
       // throw rather than return `res`, so consuming its body here is safe and
