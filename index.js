@@ -115,16 +115,29 @@ export function fetchWithTimeout(url, { timeout = DEFAULT_TIMEOUT_MS, signal, fe
   const doFetch = fetchImpl || globalThis.fetch;
   const controller = new AbortController();
   let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeout);
+  // Only arm a timer for a positive, finite timeout. `timeout: 0` (or NaN)
+  // otherwise schedules an immediate abort — a footgun for callers who pass 0
+  // meaning "no timeout". 0/negative/NaN ⇒ no timer (rely on the external
+  // signal, if any).
+  const armTimeout = Number.isFinite(timeout) && timeout > 0;
+  const timer = armTimeout
+    ? setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeout)
+    : null;
 
   // Bridge an external signal onto our controller so both a caller abort and
-  // our timeout land on the same signal the fetch is watching.
+  // our timeout land on the same signal the fetch is watching. The listener is
+  // removed in the `finally` below — otherwise a long-lived signal reused
+  // across many requests would accumulate one dead listener per completed call.
+  let onExternalAbort = null;
   if (signal) {
     if (signal.aborted) controller.abort();
-    else signal.addEventListener('abort', () => controller.abort(), { once: true });
+    else {
+      onExternalAbort = () => controller.abort();
+      signal.addEventListener('abort', onExternalAbort);
+    }
   }
 
   return doFetch(url, { ...init, signal: controller.signal })
@@ -137,7 +150,10 @@ export function fetchWithTimeout(url, { timeout = DEFAULT_TIMEOUT_MS, signal, fe
       }
       throw err;
     })
-    .finally(() => clearTimeout(timer));
+    .finally(() => {
+      if (timer) clearTimeout(timer);
+      if (onExternalAbort) signal.removeEventListener('abort', onExternalAbort);
+    });
 }
 
 // ───────────────────────── fetchWithRetry ─────────────────────────
@@ -146,6 +162,9 @@ const DEFAULT_RETRY_STATUSES = [429, 502, 503, 504];
 const DEFAULT_RETRIES = 2;
 const DEFAULT_RETRY_BASE_MS = 400;
 const DEFAULT_JITTER = 0.3;
+// Cap the error-body snippet attached to HttpError so a huge HTML error page
+// can't balloon the error object.
+const MAX_ERROR_BODY = 2048;
 
 /** Default transient classification: a listed status (429/502/503/504) or a
  *  bare network TypeError is worth retrying; a TimeoutError, an AbortError, and
@@ -193,10 +212,15 @@ export async function fetchWithRetry(url, opts = {}) {
     ...init
   } = opts;
 
+  // Clamp hostile/typo'd numeric options so a negative/NaN value can't turn the
+  // loop into "never attempt" (retries < 0) or a negative backoff delay.
+  const maxRetries = Number.isFinite(retries) && retries > 0 ? Math.floor(retries) : 0;
+  const baseMs = Number.isFinite(retryBaseMs) && retryBaseMs >= 0 ? retryBaseMs : DEFAULT_RETRY_BASE_MS;
+  const jitterFrac = Number.isFinite(jitter) && jitter >= 0 ? jitter : 0;
   const isRetryable = retryOn || ((err) => defaultRetryable(err, retryStatuses));
   let lastError;
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const res = await fetchWithTimeout(url, { ...init, timeout, signal, fetchImpl });
       if (res.ok) return res;
@@ -205,12 +229,23 @@ export async function fetchWithRetry(url, opts = {}) {
       const transient = retryStatuses.includes(res.status);
       const retryAfterMs =
         transient && respectRetryAfter ? parseRetryAfter(res.headers.get('Retry-After')) : null;
-      throw new HttpError(res.status, url, { retryable: transient, retryAfterMs });
+      // Capture a bounded snippet of the error body so consumers can read the
+      // server's message (validation text, rate-limit JSON). We're about to
+      // throw rather than return `res`, so consuming its body here is safe and
+      // also releases the connection instead of leaving it dangling until GC.
+      let body = null;
+      try {
+        if (typeof res.text === 'function') body = (await res.text()).slice(0, MAX_ERROR_BODY);
+      } catch {
+        // A body that can't be read (already consumed, network cut mid-stream)
+        // must not mask the real HTTP status — leave body null.
+      }
+      throw new HttpError(res.status, url, { body, retryable: transient, retryAfterMs });
     } catch (err) {
       lastError = err;
-      if (attempt >= retries || !isRetryable(err, attempt)) throw err;
-      const base = err && err.retryAfterMs != null ? err.retryAfterMs : retryBaseMs * 2 ** attempt;
-      const delay = base + random() * base * jitter;
+      if (attempt >= maxRetries || !isRetryable(err, attempt)) throw err;
+      const base = err && err.retryAfterMs != null ? err.retryAfterMs : baseMs * 2 ** attempt;
+      const delay = base + random() * base * jitterFrac;
       await sleepImpl(delay);
     }
   }
@@ -279,13 +314,34 @@ export async function fetchThroughProxies(url, { proxies, direct = true, onTrace
   if (!Array.isArray(proxies) || proxies.length === 0) {
     throw new Error('fetchThroughProxies: `proxies` must be a non-empty array of url-wrapper functions');
   }
-  const trace = typeof onTrace === 'function' ? onTrace : () => {};
+  // A diagnostic callback must never be able to fail the request.
+  const trace = (tag) => {
+    if (typeof onTrace !== 'function') return;
+    try {
+      onTrace(tag);
+    } catch {
+      /* swallow — onTrace is best-effort diagnostics */
+    }
+  };
   let bestNonOk = null;
   let lastError = null;
 
+  // Build the hop list, computing each proxy URL lazily-but-defensively: a
+  // single wrapper that throws (bad template, malformed URL) must not sink the
+  // whole chain — the direct hop and the other proxies still get their turn.
   const hops = [];
   if (direct) hops.push({ tag: 'direct', url });
-  proxies.forEach((wrap, i) => hops.push({ tag: `proxy${i}`, url: wrap(url) }));
+  proxies.forEach((wrap, i) => {
+    let proxied;
+    try {
+      proxied = wrap(url);
+    } catch (err) {
+      trace(`proxy${i}!`);
+      lastError = err;
+      return;
+    }
+    hops.push({ tag: `proxy${i}`, url: proxied });
+  });
 
   for (const hop of hops) {
     try {

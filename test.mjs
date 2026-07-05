@@ -394,3 +394,78 @@ test('fetchThroughProxies: requires a non-empty proxies array', async () => {
   await assert.rejects(fetchThroughProxies('https://x', { proxies: [] }));
   await assert.rejects(fetchThroughProxies('https://x', {}));
 });
+
+// ───────────────────────── hardening ─────────────────────────
+
+test('fetchWithTimeout removes the external-signal listener on settle (no leak)', async () => {
+  // A signal reused across many calls must not accumulate abort listeners.
+  const listeners = new Set();
+  const signal = {
+    aborted: false,
+    addEventListener: (_t, fn) => listeners.add(fn),
+    removeEventListener: (_t, fn) => listeners.delete(fn),
+  };
+  const impl = scriptedFetch([makeResponse('ok')]);
+  await fetchWithTimeout('https://x', { fetchImpl: impl, signal, timeout: 5000 });
+  assert.equal(listeners.size, 0, 'listener should be removed once the fetch settles');
+});
+
+test('fetchWithTimeout treats timeout:0 as "no timer", not immediate abort', async () => {
+  const impl = scriptedFetch([makeResponse({ ok: 1 })]);
+  const res = await fetchWithTimeout('https://x', { fetchImpl: impl, timeout: 0 });
+  assert.equal(res.ok, true);
+});
+
+test('fetchWithRetry clamps retries: -1 → one attempt, throws the real error', async () => {
+  const impl = scriptedFetch([makeResponse('busy', { ok: false, status: 502 })]);
+  await assert.rejects(
+    fetchWithRetry('https://x', { fetchImpl: impl, sleepImpl: noSleep, retries: -1 }),
+    (err) => err instanceof HttpError && err.status === 502,
+  );
+  assert.equal(impl.calls.length, 1);
+});
+
+test('fetchWithRetry never produces a negative backoff delay with negative jitter', async () => {
+  const delays = [];
+  const impl = scriptedFetch([
+    makeResponse('busy', { ok: false, status: 503 }),
+    makeResponse({ ok: 1 }),
+  ]);
+  await fetchWithRetry('https://x', {
+    fetchImpl: impl,
+    sleepImpl: async (ms) => delays.push(ms),
+    random: () => 1,
+    retries: 1,
+    jitter: -5,
+  });
+  assert.ok(delays[0] >= 0, `delay should be clamped non-negative, got ${delays[0]}`);
+});
+
+test('HttpError carries a bounded snippet of the non-ok body', async () => {
+  const impl = scriptedFetch([makeResponse('{"error":"bad symbol"}', { ok: false, status: 400 })]);
+  await assert.rejects(
+    fetchWithRetry('https://x', { fetchImpl: impl, sleepImpl: noSleep }),
+    (err) => err instanceof HttpError && err.body === '{"error":"bad symbol"}',
+  );
+});
+
+test('fetchThroughProxies survives a throwing proxy wrapper (chain continues)', async () => {
+  const impl = scriptedFetch([makeResponse('via good proxy')]);
+  const proxies = [
+    () => { throw new Error('bad template'); },
+    (u) => `https://good/?u=${encodeURIComponent(u)}`,
+  ];
+  const res = await fetchThroughProxies('https://origin', { proxies, direct: false, fetchImpl: impl });
+  assert.equal(res.ok, true);
+  assert.match(impl.calls[0], /^https:\/\/good/);
+});
+
+test('fetchThroughProxies swallows a throwing onTrace', async () => {
+  const impl = scriptedFetch([makeResponse('ok')]);
+  const res = await fetchThroughProxies('https://origin', {
+    proxies: PROXIES,
+    fetchImpl: impl,
+    onTrace: () => { throw new Error('diag boom'); },
+  });
+  assert.equal(res.ok, true);
+});
