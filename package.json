@@ -1,0 +1,43 @@
+{
+  "name": "@jfs/fetch-kit",
+  "version": "0.1.1",
+  "description": "Shared, dependency-free browser fetch primitives for the JFS family of buildless static PWAs — the client twin of netlify-kit's fetchWithRetry: AbortController timeout, exponential backoff with jitter, typed HttpError/TimeoutError, in-flight request coalescing, a direct-first CORS proxy fallback chain, Retry-After parsing, and multibyte-safe base64 codecs.",
+  "type": "module",
+  "license": "MIT",
+  "author": "jsvolos63",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jsvolos63/fetch-kit.git"
+  },
+  "homepage": "https://github.com/jsvolos63/fetch-kit#readme",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "bin": {
+    "jfs-fetch-kit-vendor": "bin/vendor.mjs"
+  },
+  "files": [
+    "index.js",
+    "bin"
+  ],
+  "scripts": {
+    "test": "node --test test.mjs test-vendor.mjs"
+  },
+  "dependencies": {
+    "@jfs/vendor-cli": "github:jsvolos63/vendor-cli#4370d4f7cc05658b535a55ffc73dbbcb80beb906"
+  },
+  "keywords": [
+    "fetch",
+    "retry",
+    "backoff",
+    "timeout",
+    "coalesce",
+    "cors-proxy",
+    "browser"
+  ]
+}
