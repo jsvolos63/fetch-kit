@@ -460,6 +460,21 @@ test('fetchThroughProxies survives a throwing proxy wrapper (chain continues)', 
   assert.match(impl.calls[0], /^https:\/\/good/);
 });
 
+test('fetchWithRetry tolerates a transient response with no headers object', async () => {
+  // A non-spec Response-like (no `headers`) on a retryable status must not crash
+  // the Retry-After lookup — it just falls back to the computed backoff.
+  const noHeaders = {
+    ok: false,
+    status: 503,
+    async text() { return 'busy'; },
+  };
+  const impl = scriptedFetch([noHeaders]);
+  await assert.rejects(
+    fetchWithRetry('https://x', { fetchImpl: impl, sleepImpl: noSleep, retries: 0 }),
+    (err) => err instanceof HttpError && err.status === 503,
+  );
+});
+
 test('fetchThroughProxies swallows a throwing onTrace', async () => {
   const impl = scriptedFetch([makeResponse('ok')]);
   const res = await fetchThroughProxies('https://origin', {
