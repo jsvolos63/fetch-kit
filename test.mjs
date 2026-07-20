@@ -94,6 +94,32 @@ test('parseRetryAfter: absent/garbage → null', () => {
   assert.equal(parseRetryAfter('soon'), null);
 });
 
+test('parseRetryAfter: clamps a hostile huge value to the cap', () => {
+  // A misconfigured/hostile upstream can't wedge the client for hours.
+  // 100000000s * 1000 = 1e11 ms unclamped; must clamp to 120000.
+  assert.equal(parseRetryAfter('100000000'), 120000);
+  // A far-future HTTP-date is clamped the same way.
+  const farFuture = new Date(Date.now() + 365 * 24 * 3600 * 1000).toUTCString();
+  assert.equal(parseRetryAfter(farFuture), 120000);
+  // A within-cap value passes through untouched.
+  assert.equal(parseRetryAfter('30'), 30000);
+});
+
+test('fetchWithRetry never waits past the Retry-After cap even for a huge header', async () => {
+  const delays = [];
+  const impl = scriptedFetch([
+    makeResponse('busy', { ok: false, status: 429, headers: { 'Retry-After': '100000000' } }),
+    makeResponse({ ok: 1 }),
+  ]);
+  await fetchWithRetry('https://x', {
+    fetchImpl: impl,
+    sleepImpl: async (ms) => { delays.push(ms); },
+    random: () => 1, // max jitter
+    retries: 1,
+  });
+  assert.ok(delays[0] <= 120000, `delay should be clamped to the cap, got ${delays[0]}`);
+});
+
 // ───────────────────────── base64 codecs ─────────────────────────
 
 test('base64 codecs round-trip multibyte text', () => {

@@ -68,15 +68,24 @@ export class TimeoutError extends Error {
 /** Promise-based sleep. Injectable into the retry loop so tests don't wait. */
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Retry-After → milliseconds. Handles both the delta-seconds form ("120") and
- *  the HTTP-date form ("Wed, 21 Oct 2026 07:28:00 GMT"); returns null when the
- *  header is absent or unparseable. */
+// Upper bound on any Retry-After-derived delay. A hostile or misconfigured
+// upstream can send `Retry-After: 100000000` (or a far-future HTTP-date) and,
+// unclamped, that value flows straight into the retry backoff — wedging the
+// client for hours/days. Cap it so the server can still ask us to wait, but
+// never longer than two minutes.
+const RETRY_AFTER_CAP_MS = 120000;
+
+/** Retry-After → milliseconds, clamped to [0, RETRY_AFTER_CAP_MS]. Handles both
+ *  the delta-seconds form ("120") and the HTTP-date form
+ *  ("Wed, 21 Oct 2026 07:28:00 GMT"); returns null when the header is absent or
+ *  unparseable. The upper clamp keeps a hostile/misconfigured upstream from
+ *  wedging the client for hours with an enormous value. */
 export function parseRetryAfter(headerValue) {
   if (!headerValue) return null;
   const secs = Number(headerValue);
-  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  if (Number.isFinite(secs)) return Math.min(RETRY_AFTER_CAP_MS, Math.max(0, secs * 1000));
   const dateMs = Date.parse(headerValue);
-  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
+  if (Number.isFinite(dateMs)) return Math.min(RETRY_AFTER_CAP_MS, Math.max(0, dateMs - Date.now()));
   return null;
 }
 
@@ -248,7 +257,10 @@ export async function fetchWithRetry(url, opts = {}) {
       lastError = err;
       if (attempt >= maxRetries || !isRetryable(err, attempt)) throw err;
       const base = err && err.retryAfterMs != null ? err.retryAfterMs : baseMs * 2 ** attempt;
-      const delay = base + random() * base * jitterFrac;
+      // Clamp the final delay too: even a parsed Retry-After (already capped in
+      // parseRetryAfter) plus jitter, or a runaway exponential base, must never
+      // push a single wait past the cap and wedge the client.
+      const delay = Math.min(RETRY_AFTER_CAP_MS, base + random() * base * jitterFrac);
       await sleepImpl(delay);
     }
   }
