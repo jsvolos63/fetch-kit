@@ -1,6 +1,6 @@
 {
   "name": "@jfs/fetch-kit",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Shared, dependency-free browser fetch primitives for the JFS family of buildless static PWAs — the client twin of netlify-kit's fetchWithRetry: AbortController timeout, exponential backoff with jitter, typed HttpError/TimeoutError, in-flight request coalescing, a direct-first CORS proxy fallback chain, Retry-After parsing, and multibyte-safe base64 codecs.",
   "type": "module",
   "license": "MIT",
