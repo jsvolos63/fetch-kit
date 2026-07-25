@@ -149,7 +149,20 @@ export function fetchWithTimeout(url, { timeout = DEFAULT_TIMEOUT_MS, signal, fe
     }
   }
 
-  return doFetch(url, { ...init, signal: controller.signal })
+  // Guard the call itself: a synchronously-throwing fetchImpl (or a missing
+  // global fetch in a non-browser runtime) would otherwise skip the .finally
+  // below entirely, leaking the armed timer (which keeps a node event loop
+  // alive for up to `timeout` ms) and the external-signal listener.
+  let pending;
+  try {
+    pending = doFetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (timer) clearTimeout(timer);
+    if (onExternalAbort) signal.removeEventListener('abort', onExternalAbort);
+    throw err;
+  }
+
+  return Promise.resolve(pending)
     .catch((err) => {
       // Our timer fired: surface a clear TimeoutError. A caller-driven abort
       // (external signal) keeps its original AbortError so the caller can tell

@@ -436,6 +436,23 @@ test('fetchWithTimeout removes the external-signal listener on settle (no leak)'
   assert.equal(listeners.size, 0, 'listener should be removed once the fetch settles');
 });
 
+test('fetchWithTimeout cleans up timer + signal listener when fetchImpl throws synchronously', () => {
+  // A sync-throwing impl (or a missing global fetch) must not leak the armed
+  // timeout timer or leave a dead abort listener on a reused signal.
+  const listeners = new Set();
+  const signal = {
+    aborted: false,
+    addEventListener: (_t, fn) => listeners.add(fn),
+    removeEventListener: (_t, fn) => listeners.delete(fn),
+  };
+  const boom = new TypeError('fetch is not a function');
+  assert.throws(
+    () => fetchWithTimeout('https://x', { fetchImpl: () => { throw boom; }, signal, timeout: 5000 }),
+    (err) => err === boom,
+  );
+  assert.equal(listeners.size, 0, 'abort listener must be removed on a sync throw');
+});
+
 test('fetchWithTimeout treats timeout:0 as "no timer", not immediate abort', async () => {
   const impl = scriptedFetch([makeResponse({ ok: 1 })]);
   const res = await fetchWithTimeout('https://x', { fetchImpl: impl, timeout: 0 });
