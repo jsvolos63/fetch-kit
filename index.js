@@ -217,6 +217,11 @@ function defaultRetryable(err, retryStatuses) {
  *    signal         external AbortSignal
  *    fetchImpl, sleepImpl, random  injectable seams for tests
  *    ...init        passed to fetch
+ *
+ *  NOT the same contract as @jfs/netlify-kit's fetchWithRetry: this one
+ *  retries 429 by default, honors Retry-After, and throws HttpError on any
+ *  non-ok status; netlify-kit's does not retry 429 unless opted in, ignores
+ *  Retry-After, and returns the Response (ok or not) instead of throwing.
  */
 export async function fetchWithRetry(url, opts = {}) {
   const {
