@@ -1,13 +1,39 @@
 # @jfs/fetch-kit — working notes for Claude
 
-Shared, dependency-free browser fetch primitives for the JFS family of
-buildless static PWAs — the client twin of netlify-kit's
+Shared, dependency-free browser fetch **and storage** primitives for the JFS
+family of buildless static PWAs — the client twin of netlify-kit's
 `fetchWithRetry`: AbortController timeout, exponential backoff with
 jitter, typed `HttpError`/`TimeoutError`, in-flight request coalescing, a
 direct-first CORS proxy fallback chain, `Retry-After` parsing, and
 multibyte-safe base64 codecs. Consumers vendor this kit via its own CLI
 rather than installing it at runtime, so a change here reaches an app only
 once that app bumps its pin and re-runs `vendor:sync`.
+
+## This kit ABSORBED @jfs/cache-kit (v0.2.0)
+
+The storage section at the bottom of `index.js` — safe localStorage wrappers
+(`lsGet`/`lsSet`/`lsRemove`), quota-aware writes (`isQuotaError`/
+`safeSetItem`), and the two TTL-snapshot shapes (`saveSnapshot`/
+`readSnapshot`, `writeTtlJson`/`readTtlJson`/`readTtlJsonTimestamp`) — used
+to be its own kit. Per the family's own extraction bar (*prefer growing an
+existing kit over minting a new one*), a 255-line repo with three consumers
+that entirely overlap this kit's was one repo's permanent CI / pin /
+vendoring overhead too many, so cache-kit went the way of dom-kit and
+modal-kit: absorbed, retired, archived. Never re-add its pin.
+
+Two rules carried over intact:
+
+- **Compatibility superset.** Both snapshot shapes (`{at, payload}` vs
+  `{ts, data}`) and both freshness comparisons (inclusive `<=` vs exclusive
+  `<`) stay byte-for-byte — consumers adopted by changing import paths, and
+  their users' stored data must keep parsing. Don't collapse them into one.
+- **No IndexedDB store.** cache-kit's old tier 2 lives on as
+  `JFS-Sports/cache-store-idb.js` (its only consumer). If a second and third
+  app ever need one, take that file back rather than rebuilding it here.
+
+`test-storage.mjs` is the absorbed suite; the storage section, like the rest
+of the kit, resolves `localStorage` at call time and touches no global at
+import time, so `"sideEffects": false` stays honest.
 
 <!-- jfs-family-conventions:start — managed by jfs-claude-md-sync; edit family/family-conventions.md in @jfs/vendor-cli -->
 
