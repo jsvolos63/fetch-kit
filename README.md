@@ -1,9 +1,10 @@
 # @jfs/fetch-kit
 
-Shared, dependency-free **browser fetch primitives** for the JFS family of
-buildless static PWAs — the client-side twin of
+Shared, dependency-free **browser fetch and storage primitives** for the JFS
+family of buildless static PWAs — the client-side twin of
 [`@jfs/netlify-kit`](https://github.com/jsvolos63/netlify-kit)'s server
-`fetchWithRetry`.
+`fetchWithRetry`, plus the localStorage primitives absorbed from the retired
+`@jfs/cache-kit` at v0.2.0.
 
 Every app in the family hand-rolls the same client fetch layer: an
 `AbortController` timeout, exponential backoff with jitter, a
@@ -93,6 +94,33 @@ diagnostics; `direct: false` skips the origin.
 (`atob`/`btoa` are Latin-1 only), for the GitHub Contents API and friends.
 The decoder is `fatal`, so malformed UTF-8 throws rather than corrupting.
 
+## Storage primitives (absorbed from @jfs/cache-kit, v0.2.0)
+
+The client-side localStorage primitives that used to be their own kit — the
+same consolidation news-kit made on dom-kit and modal-kit. Every helper keeps
+its origin's exact name, signature, and on-disk format, so a consumer adopts
+this section by changing import paths, not call sites:
+
+- **`lsGet(key)` / `lsSet(key, value)` / `lsRemove(key)`** — safe wrappers
+  that never throw (private browsing, quota, locked-down iframes); reads
+  return `null` on any failure, writes are best-effort no-ops.
+- **`isQuotaError(e)` / `safeSetItem(key, value, {ownedKeys})`** — recognize
+  a quota rejection across browsers; write one key with quota recovery
+  (evict the *other* `ownedKeys` and retry once — only a key that is itself
+  owned may trigger the eviction).
+- **`saveSnapshot(key, payload)` / `readSnapshot(key, maxAgeMs)`** — the
+  Weather `{at, payload}` shape, fresh while `now - at <= maxAgeMs`.
+- **`writeTtlJson(key, data, opts)` / `readTtlJson(key, maxAgeMs)` /
+  `readTtlJsonTimestamp(key, maxAgeMs)`** — the market-monitor `{ts, data}`
+  shape, fresh while `now - ts < maxAgeMs`.
+
+Both snapshot shapes and both freshness comparisons are deliberate: existing
+users' stored data keeps parsing after adoption. Every read parses through a
+prototype-pollution-stripping reviver (`__proto__` / `constructor` /
+`prototype` dropped at every depth). No IndexedDB store — cache-kit's old
+tier 2 lives on as `JFS-Sports/cache-store-idb.js`; take that file back if a
+second and third app ever need one.
+
 ## How it's consumed
 
 These are buildless sites — `node_modules` is not deployed. Each app commits a
@@ -113,7 +141,7 @@ drift.
 ## Test
 
 ```
-npm test        # node --test test.mjs test-vendor.mjs
+npm test        # node --test test.mjs test-storage.mjs test-vendor.mjs
 ```
 
 The retry/backoff/timeout logic runs through injected `fetchImpl` / `sleepImpl`

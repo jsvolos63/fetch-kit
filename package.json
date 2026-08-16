@@ -1,7 +1,7 @@
 {
   "name": "@jfs/fetch-kit",
-  "version": "0.1.5",
-  "description": "Shared, dependency-free browser fetch primitives for the JFS family of buildless static PWAs — the client twin of netlify-kit's fetchWithRetry: AbortController timeout, exponential backoff with jitter, typed HttpError/TimeoutError, in-flight request coalescing, a direct-first CORS proxy fallback chain, Retry-After parsing, and multibyte-safe base64 codecs.",
+  "version": "0.2.0",
+  "description": "Shared, dependency-free browser fetch and storage primitives for the JFS family of buildless static PWAs — the client twin of netlify-kit's fetchWithRetry (AbortController timeout, exponential backoff with jitter, typed HttpError/TimeoutError, in-flight request coalescing, a direct-first CORS proxy fallback chain, Retry-After parsing, multibyte-safe base64 codecs) plus the localStorage primitives absorbed from the retired @jfs/cache-kit (safe wrappers that never throw, JSON snapshots with TTL, quota-aware multi-key saves).",
   "type": "module",
   "license": "MIT",
   "author": "jsvolos63",
@@ -26,7 +26,7 @@
     "bin"
   ],
   "scripts": {
-    "test": "node --test test.mjs test-vendor.mjs"
+    "test": "node --test test.mjs test-storage.mjs test-vendor.mjs"
   },
   "dependencies": {
     "@jfs/vendor-cli": "github:jsvolos63/vendor-cli#933ab4010477c6e290305f2adca050bb90889a16"
@@ -38,6 +38,11 @@
     "timeout",
     "coalesce",
     "cors-proxy",
-    "browser"
+    "browser",
+    "localstorage",
+    "cache",
+    "ttl",
+    "snapshot",
+    "quota"
   ]
 }
