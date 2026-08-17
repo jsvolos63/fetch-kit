@@ -174,8 +174,18 @@ describe('saveSnapshot / readSnapshot (Weather {at, payload})', () => {
 
     test('freshness is inclusive: age exactly maxAgeMs still reads', () => {
         const ls = installLocalStorage(makeFakeLocalStorage());
-        ls.setItem('k', JSON.stringify({ at: Date.now() - 5000, payload: 1 }));
-        assert.ok(readSnapshot('k', 5000));
+        // Freeze the clock: the exact-boundary case (age === maxAgeMs) only
+        // holds if no time passes between writing `at` and the read — on a
+        // busy CI runner a single elapsed millisecond flips it to stale.
+        const realNow = Date.now;
+        try {
+            const now = realNow();
+            Date.now = () => now;
+            ls.setItem('k', JSON.stringify({ at: now - 5000, payload: 1 }));
+            assert.ok(readSnapshot('k', 5000));
+        } finally {
+            Date.now = realNow;
+        }
     });
 
     test('stale snapshot reads as null', () => {
@@ -218,9 +228,19 @@ describe('writeTtlJson / readTtlJson / readTtlJsonTimestamp (market-monitor {ts,
 
     test('freshness is exclusive: age exactly maxAgeMs is stale', () => {
         const ls = installLocalStorage(makeFakeLocalStorage());
-        ls.setItem('k', JSON.stringify({ ts: Date.now() - 5000, data: { a: 1 } }));
-        assert.equal(readTtlJson('k', 5000), null);
-        assert.deepEqual(readTtlJson('k', 5001), { a: 1 });
+        // Freeze the clock: the maxAgeMs+1 read below expects FRESH, which
+        // only holds while age stays exactly 5000 — one elapsed millisecond
+        // between the write and the read flips it stale.
+        const realNow = Date.now;
+        try {
+            const now = realNow();
+            Date.now = () => now;
+            ls.setItem('k', JSON.stringify({ ts: now - 5000, data: { a: 1 } }));
+            assert.equal(readTtlJson('k', 5000), null);
+            assert.deepEqual(readTtlJson('k', 5001), { a: 1 });
+        } finally {
+            Date.now = realNow;
+        }
     });
 
     test('rejects entries whose data is missing, an array, or a primitive', () => {
