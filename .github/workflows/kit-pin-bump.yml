@@ -1,0 +1,36 @@
+name: Kit pin bump
+
+# This kit is a CONSUMER of exactly one @jfs pin: `dependencies.@jfs/vendor-cli`.
+# That pin is load-bearing for every consumer of this kit — bin/vendor.mjs is a
+# shim that runs whatever vendor-cli resolves from INSIDE this package, so the
+# CLI a consumer's `jfs-fetch-kit-vendor` executes is decided here, not in the
+# consumer's tree.
+#
+# Nothing watched it, and the pin sat at vendor-cli 0.8.0 while the family
+# shipped 0.17.0 — the same silent-pin-drift failure mode pwa-kit documented
+# and closed (its pin sat at 0.8.0 too, for the same reason: kits don't
+# normally carry this workflow). This is news-kit's stub with this repo's
+# shape. No vendor:sync (this kit vendors nothing) and no version bump (a
+# kit's semver tracks ITS shipped surface — index.js and bin — which a
+# vendor-cli pin bump does not touch; family CI's version guard watches
+# exactly those paths and would object).
+on:
+  schedule:
+    - cron: '41 6 * * 1'   # Mondays ~06:41 UTC, with the rest of the family
+  workflow_dispatch:
+
+permissions:
+  contents: write        # the caller must grant both — a called
+  pull-requests: write   # workflow can't elevate its token
+
+jobs:
+  bump:
+    uses: jsvolos63/vendor-cli/.github/workflows/kit-pin-bump.yml@main
+    with:
+      # The same checks test.yml runs. test-vendor.mjs drives the pinned CLI's
+      # generator over this kit's own source, so a vendor-cli bump that would
+      # change what consumers vendor fails HERE rather than in four consumers'
+      # `vendor:sync`.
+      check-command: |
+        node --check index.js
+        npm test

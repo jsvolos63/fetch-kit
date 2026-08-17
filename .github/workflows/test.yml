@@ -19,6 +19,7 @@ jobs:
   family-ci:
     uses: jsvolos63/vendor-cli/.github/workflows/family-ci.yml@main
     with:
+      verify-kit-pins: true
       run: |
         node --check index.js
         npm test
