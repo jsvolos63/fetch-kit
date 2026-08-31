@@ -22,5 +22,6 @@ jobs:
       verify-kit-pins: true
       run: |
         node --check index.js
+        npm run lint
         npm test
       version-guard-paths: index.js bin

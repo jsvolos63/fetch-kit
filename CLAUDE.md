@@ -35,6 +35,25 @@ Two rules carried over intact:
 of the kit, resolves `localStorage` at call time and touches no global at
 import time, so `"sideEffects": false` stays honest.
 
+## Lint
+
+`npm run lint` (ESLint flat config, `eslint.config.mjs`); CI runs it. Every
+APP in the family already linted; none of the kits did — which left the
+widest-blast-radius code with no second reader, since a bug here lands in
+every consumer's vendored copy as bundler output nobody reads line by line.
+
+`index.js` came back clean, so adopting it needed no version bump. Both
+findings were unused bindings in `test-storage.mjs` (an imported `beforeEach`,
+and one `const ls =` whose call is only there for its global-installing side
+effect). `no-regex-spaces` is off, as in the sibling kits: the vendor suite
+matches a known two-space indent in generated output.
+
+One note for whoever fixes a finding here next. `const ls =
+installLocalStorage(makeFakeLocalStorage());` appears SIXTEEN times in
+`test-storage.mjs` and `ls` is genuinely used in fifteen of them — a
+find-and-replace on that line to silence the one unused binding breaks the
+other fifteen tests. Patch by line, not by text.
+
 <!-- jfs-family-conventions:start — managed by jfs-claude-md-sync; edit family/family-conventions.md in @jfs/vendor-cli -->
 
 ## Family conventions
