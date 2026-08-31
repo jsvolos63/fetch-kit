@@ -19,6 +19,10 @@ on:
   workflow_run:
     workflows: [Test]
     types: [completed]
+    # REQUIRED. workflow_run fires for a CI run on ANY branch, so without
+    # this a green run on a feature branch would tag that branch's commit
+    # and publish a release from unmerged work.
+    branches: [main]
   workflow_dispatch:
 
 permissions:
