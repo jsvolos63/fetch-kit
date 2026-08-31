@@ -35,8 +35,6 @@ Two rules carried over intact:
 of the kit, resolves `localStorage` at call time and touches no global at
 import time, so `"sideEffects": false` stays honest.
 
-<!-- jfs-family-conventions:start — managed by jfs-claude-md-sync; edit family/family-conventions.md in @jfs/vendor-cli -->
-
 ## Lint
 
 `npm run lint` (ESLint flat config, `eslint.config.mjs`); CI runs it. Every
@@ -55,6 +53,8 @@ installLocalStorage(makeFakeLocalStorage());` appears SIXTEEN times in
 `test-storage.mjs` and `ls` is genuinely used in fifteen of them — a
 find-and-replace on that line to silence the one unused binding breaks the
 other fifteen tests. Patch by line, not by text.
+
+<!-- jfs-family-conventions:start — managed by jfs-claude-md-sync; edit family/family-conventions.md in @jfs/vendor-cli -->
 
 ## Family conventions
 
