@@ -10,7 +10,7 @@
 // The IndexedDB store's cases left with the implementation in v0.3.0; they
 // live in JFS-Sports' tests/cache-store-idb.test.js now.
 
-import { test, describe, beforeEach, afterEach } from 'node:test';
+import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -414,7 +414,7 @@ describe('prototype-pollution defense strips at every nesting level', () => {
     });
 
     test('CONTROL: ordinary nested data (objects, arrays, primitives) survives untouched', () => {
-        const ls = installLocalStorage(makeFakeLocalStorage());
+        installLocalStorage(makeFakeLocalStorage());
         const payload = {
             a: 1, s: 'text', t: true, n: null,
             nested: { deep: { deeper: [1, 'two', { three: 3 }] } },
