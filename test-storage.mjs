@@ -203,6 +203,9 @@ describe('saveSnapshot / readSnapshot (Weather {at, payload})', () => {
         assert.equal(readSnapshot('no-at', 5000), null);
         ls.setItem('string-at', JSON.stringify({ at: 'now', payload: 1 }));
         assert.equal(readSnapshot('string-at', 5000), null);
+        // A numeric STRING coerces through the subtraction — it is still not a stamp.
+        ls.setItem('numeric-string-at', JSON.stringify({ at: String(Date.now()), payload: 1 }));
+        assert.equal(readSnapshot('numeric-string-at', 5000), null);
     });
 
     test('a far-future stamp is a poisoned entry, not a fresh one', () => {

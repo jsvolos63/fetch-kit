@@ -104,6 +104,9 @@ test('parseRetryAfter: only RFC 9110 delta-seconds count as a number', () => {
   assert.equal(parseRetryAfter('1.5'), null);
   assert.equal(parseRetryAfter(' 30 '), 30000);
   assert.equal(parseRetryAfter(30), 30000);
+  // A numeric 0 is "retry now", not an absent header.
+  assert.equal(parseRetryAfter(0), 0);
+  assert.equal(parseRetryAfter(undefined), null);
 });
 
 test('parseRetryAfter: clamps a hostile huge value to the cap', () => {

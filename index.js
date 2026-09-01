@@ -86,7 +86,9 @@ const RETRY_AFTER_CAP_MS = 120000;
  *  unparseable. The upper clamp keeps a hostile/misconfigured upstream from
  *  wedging the client for hours with an enormous value. */
 export function parseRetryAfter(headerValue) {
-  if (!headerValue) return null;
+  // Absent means absent — a numeric 0 is a valid "retry now", not a
+  // missing header (the falsy guard used to swallow it).
+  if (headerValue == null || headerValue === '') return null;
   // RFC 9110 delta-seconds is a non-negative integer. A bare Number() also
   // accepted "  " (→ 0: no backoff at all, so every retry fired at once),
   // "0x10" and "1e3"; the digits test is what netlify-kit's twin does.
@@ -599,8 +601,9 @@ const MAX_FUTURE_SKEW_MS = 60_000;
 
 /** The two freshness comparisons stay byte-for-byte with the shapes they
  *  came from (inclusive `<=` for `{at, payload}`, exclusive `<` for
- *  `{ts, data}`); this only adds the lower bound and the NaN rejection an
- *  `undefined` / non-numeric stamp used to slip past. */
+ *  `{ts, data}`); what this adds is the future-skew floor and an explicit
+ *  non-finite rejection, so a stamp that coerces to a number (a string
+ *  "123") is refused by the caller's type check rather than compared. */
 function isUsableAge(ageMs, maxAgeMs, inclusive) {
     if (!Number.isFinite(ageMs) || ageMs < -MAX_FUTURE_SKEW_MS) return false;
     return inclusive ? ageMs <= maxAgeMs : ageMs < maxAgeMs;
@@ -614,7 +617,9 @@ function isUsableAge(ageMs, maxAgeMs, inclusive) {
 export function readSnapshot(key, maxAgeMs) {
     try {
         const snap = parseSafeJson(localStorage.getItem(key));
-        if (snap && isUsableAge(Date.now() - snap.at, maxAgeMs, true)) {
+        // `at` must BE a number: a string coerces through the subtraction and
+        // would read as fresh; readTtlJson already checks `ts` the same way.
+        if (snap && typeof snap.at === 'number' && isUsableAge(Date.now() - snap.at, maxAgeMs, true)) {
             // parseSafeJson already stripped every level; depollute is the
             // second layer in case a future call site hands over a value that
             // did not come through the reviver.
