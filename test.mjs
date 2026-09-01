@@ -94,6 +94,18 @@ test('parseRetryAfter: absent/garbage → null', () => {
   assert.equal(parseRetryAfter('soon'), null);
 });
 
+test('parseRetryAfter: only RFC 9110 delta-seconds count as a number', () => {
+  // Number('  ') is 0 — which used to mean "no backoff at all", so both
+  // retries fired at once off a whitespace-only header.
+  assert.equal(parseRetryAfter('  '), null);
+  assert.equal(parseRetryAfter('0x10'), null);
+  assert.equal(parseRetryAfter('1e3'), null);
+  assert.equal(parseRetryAfter('-5'), null);
+  assert.equal(parseRetryAfter('1.5'), null);
+  assert.equal(parseRetryAfter(' 30 '), 30000);
+  assert.equal(parseRetryAfter(30), 30000);
+});
+
 test('parseRetryAfter: clamps a hostile huge value to the cap', () => {
   // A misconfigured/hostile upstream can't wedge the client for hours.
   // 100000000s * 1000 = 1e11 ms unclamped; must clamp to 120000.
