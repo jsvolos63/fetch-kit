@@ -201,6 +201,18 @@ describe('saveSnapshot / readSnapshot (Weather {at, payload})', () => {
         assert.equal(readSnapshot('corrupt', 5000), null);
         ls.setItem('no-at', JSON.stringify({ payload: 1 }));
         assert.equal(readSnapshot('no-at', 5000), null);
+        ls.setItem('string-at', JSON.stringify({ at: 'now', payload: 1 }));
+        assert.equal(readSnapshot('string-at', 5000), null);
+    });
+
+    test('a far-future stamp is a poisoned entry, not a fresh one', () => {
+        const ls = installLocalStorage(makeFakeLocalStorage());
+        // Without an upper bound an `at` of 1e18 never ages past maxAgeMs.
+        ls.setItem('poisoned', JSON.stringify({ at: 1e18, payload: 'ancient' }));
+        assert.equal(readSnapshot('poisoned', 5000), null);
+        // Ordinary clock skew (a save stamped a few seconds ahead) still reads.
+        ls.setItem('skewed', JSON.stringify({ at: Date.now() + 5000, payload: 1 }));
+        assert.ok(readSnapshot('skewed', 5000));
     });
 
     test('save into a throwing localStorage is a silent no-op', () => {
@@ -302,6 +314,9 @@ describe('writeTtlJson / readTtlJson / readTtlJsonTimestamp (market-monitor {ts,
         ls.setItem('old', JSON.stringify({ ts: Date.now() - 10_000, data: {} }));
         assert.equal(readTtlJsonTimestamp('old', 5000), null);
         assert.equal(readTtlJsonTimestamp('missing', 5000), null);
+        ls.setItem('poisoned', JSON.stringify({ ts: 1e18, data: { a: 1 } }));
+        assert.equal(readTtlJsonTimestamp('poisoned', 5000), null);
+        assert.equal(readTtlJson('poisoned', 5000), null);
     });
 });
 

@@ -87,9 +87,16 @@ const RETRY_AFTER_CAP_MS = 120000;
  *  wedging the client for hours with an enormous value. */
 export function parseRetryAfter(headerValue) {
   if (!headerValue) return null;
-  const secs = Number(headerValue);
-  if (Number.isFinite(secs)) return Math.min(RETRY_AFTER_CAP_MS, Math.max(0, secs * 1000));
-  const dateMs = Date.parse(headerValue);
+  // RFC 9110 delta-seconds is a non-negative integer. A bare Number() also
+  // accepted "  " (→ 0: no backoff at all, so every retry fired at once),
+  // "0x10" and "1e3"; the digits test is what netlify-kit's twin does.
+  const text = String(headerValue).trim();
+  if (/^\d+$/.test(text)) return Math.min(RETRY_AFTER_CAP_MS, Number(text) * 1000);
+  // Every HTTP-date form names a month, and V8's lenient Date.parse would
+  // otherwise read "1.5" or "-5" as a date in 2001 — i.e. a past date, i.e.
+  // no backoff — which is the same zero-delay failure by another door.
+  if (!/[A-Za-z]/.test(text)) return null;
+  const dateMs = Date.parse(text);
   if (Number.isFinite(dateMs)) return Math.min(RETRY_AFTER_CAP_MS, Math.max(0, dateMs - Date.now()));
   return null;
 }
@@ -224,9 +231,10 @@ function defaultRetryable(err, retryStatuses) {
  *    ...init        passed to fetch
  *
  *  NOT the same contract as @jfs/netlify-kit's fetchWithRetry: this one
- *  retries 429 by default, honors Retry-After, and throws HttpError on any
- *  non-ok status; netlify-kit's does not retry 429 unless opted in, ignores
- *  Retry-After, and returns the Response (ok or not) instead of throwing.
+ *  retries 429 by default and throws HttpError on any non-ok status;
+ *  netlify-kit's does not retry 429 unless opted in and returns the Response
+ *  (ok or not) instead of throwing. Both honor Retry-After (since netlify-kit
+ *  0.8.0); this one caps it at RETRY_AFTER_CAP_MS, netlify-kit at its capMs.
  */
 export async function fetchWithRetry(url, opts = {}) {
   const {
@@ -584,6 +592,20 @@ export function saveSnapshot(key, payload) {
     } catch { /* private browsing — snapshots just won't persist */ }
 }
 
+// A snapshot stamped further in the future than this is not a clock-skewed
+// save, it is a poisoned or corrupt entry — and without an upper bound it
+// would read as fresh forever, since its age never reaches maxAgeMs.
+const MAX_FUTURE_SKEW_MS = 60_000;
+
+/** The two freshness comparisons stay byte-for-byte with the shapes they
+ *  came from (inclusive `<=` for `{at, payload}`, exclusive `<` for
+ *  `{ts, data}`); this only adds the lower bound and the NaN rejection an
+ *  `undefined` / non-numeric stamp used to slip past. */
+function isUsableAge(ageMs, maxAgeMs, inclusive) {
+    if (!Number.isFinite(ageMs) || ageMs < -MAX_FUTURE_SKEW_MS) return false;
+    return inclusive ? ageMs <= maxAgeMs : ageMs < maxAgeMs;
+}
+
 /**
  * Read a snapshot written by `saveSnapshot`. Returns the whole
  * `{at, payload}` object while it is at most `maxAgeMs` old, else null
@@ -592,7 +614,7 @@ export function saveSnapshot(key, payload) {
 export function readSnapshot(key, maxAgeMs) {
     try {
         const snap = parseSafeJson(localStorage.getItem(key));
-        if (snap && Date.now() - snap.at <= maxAgeMs) {
+        if (snap && isUsableAge(Date.now() - snap.at, maxAgeMs, true)) {
             // parseSafeJson already stripped every level; depollute is the
             // second layer in case a future call site hands over a value that
             // did not come through the reviver.
@@ -625,7 +647,7 @@ export function readTtlJson(key, maxAgeMs) {
         if (!raw) return null;
         const obj = parseSafeJson(raw);
         if (!obj || typeof obj !== 'object' || typeof obj.ts !== 'number') return null;
-        if (Date.now() - obj.ts >= maxAgeMs) return null;
+        if (!isUsableAge(Date.now() - obj.ts, maxAgeMs, false)) return null;
         if (obj.data == null || typeof obj.data !== 'object' || Array.isArray(obj.data)) return null;
         return depollute(obj.data);
     } catch { return null; }
@@ -643,7 +665,7 @@ export function readTtlJsonTimestamp(key, maxAgeMs) {
         if (!raw) return null;
         const obj = depollute(parseSafeJson(raw));
         if (!obj || typeof obj.ts !== 'number') return null;
-        if (Date.now() - obj.ts >= maxAgeMs) return null;
+        if (!isUsableAge(Date.now() - obj.ts, maxAgeMs, false)) return null;
         return obj.ts;
     } catch { return null; }
 }
