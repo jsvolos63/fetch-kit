@@ -50,9 +50,9 @@ matches a known two-space indent in generated output.
 
 One note for whoever fixes a finding here next. `const ls =
 installLocalStorage(makeFakeLocalStorage());` appears SIXTEEN times in
-`test-storage.mjs` and `ls` is genuinely used in fifteen of them — a
-find-and-replace on that line to silence the one unused binding breaks the
-other fifteen tests. Patch by line, not by text.
+`test-storage.mjs`, and `ls` is genuinely used in every one of them now that
+the one unused binding is fixed — a find-and-replace on that line to silence
+a future finding breaks every other test. Patch by line, not by text.
 
 <!-- jfs-family-conventions:start — managed by jfs-claude-md-sync; edit family/family-conventions.md in @jfs/vendor-cli -->
 

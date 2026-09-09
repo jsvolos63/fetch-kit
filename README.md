@@ -133,8 +133,9 @@ imports it directly. ES-module apps vendor the verbatim ESM copy:
 ```
 
 Classic-script apps use `--format global --name FetchKit` (exposes
-`globalThis.FetchKit`) or `--format bare` where the file is concatenated into a
-bundle. The exposed surface is derived from `index.js`'s own `export`
+`globalThis.FetchKit`); CommonJS functions use `--format cjs`. (A fourth
+`bare` format existed through vendor-cli 0.18.x with no consumer and was
+removed in 0.19.0.) The exposed surface is derived from `index.js`'s own `export`
 declarations, never a hand-maintained list; `npm run vendor:check` fails CI on
 drift.
 

@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -105,18 +105,12 @@ test('global format: --pick narrows the surface and rejects unknown names', () =
   assert.match(bad.stderr, /definitelyNotAnExport/);
 });
 
-test('bare format: parseable, export-free, no global assignment', () => {
+test('bare format was removed in vendor-cli 0.19.0: an unknown format refuses loudly', () => {
   const dir = freshDir();
   const r = run(['--format', 'bare', '--out', 'out.bare.js'], dir);
-  assert.equal(r.status, 0, r.stderr);
-  const file = join(dir, 'out.bare.js');
-  const out = readFileSync(file, 'utf8');
-  assert.equal(syntaxCheck(file).status, 0, 'bare output must parse as a classic script');
-  assert.ok(!/^export\s/m.test(out), 'no export keywords may survive');
-  // The kit source may legitimately *reference* globalThis; what bare must
-  // not do is emit the surface-map assignment the global format adds.
-  assert.ok(!/^globalThis\.[A-Za-z_$][A-Za-z0-9_$]* = \{$/m.test(out), 'bare output must not assign a surface global');
-  assert.ok(!out.includes('module.exports'));
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /--format must be one of/);
+  assert.ok(!existsSync(join(dir, 'out.bare.js')), 'nothing may be written');
 });
 
 test('cjs format: parseable and exports the full derived surface', () => {
