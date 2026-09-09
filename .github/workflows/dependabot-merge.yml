@@ -1,0 +1,22 @@
+# Land Dependabot's PRs once CI is green on them — through the family's
+# reusable workflow (jsvolos63/vendor-cli), which merges only when every
+# bump in the PR is minor or patch and leaves a major bump open for a
+# review. Dependabot's own pull_request CI run holds a read-only token, so
+# nothing in it can merge; this fires when that run completes.
+#
+# The `workflows:` list must match this repo's CI workflow `name:` EXACTLY
+# — a typo there silently never fires.
+name: Dependabot merge
+
+on:
+  workflow_run:
+    workflows: [Test]
+    types: [completed]
+
+permissions:
+  contents: write        # the caller must grant both — a called
+  pull-requests: write   # workflow can't elevate its token
+
+jobs:
+  merge:
+    uses: jsvolos63/vendor-cli/.github/workflows/dependabot-merge.yml@main
