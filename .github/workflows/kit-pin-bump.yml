@@ -27,6 +27,15 @@ jobs:
   bump:
     uses: jsvolos63/vendor-cli/.github/workflows/kit-pin-bump.yml@main
     with:
+      # A kit has no vendor:sync and no version:stamp: its semver tracks
+      # index.js + bin, which a CLI pin bump never touches. Left at the
+      # reusable workflow's defaults (`npm run vendor:sync`, `npm run
+      # version:stamp`) the run died on "Missing script" every Monday from
+      # the day it was added, and nothing here noticed. Re-install so
+      # package-lock.json follows the bumped pin (CI runs `npm ci`), and
+      # skip the app-version bump.
+      vendor-sync-command: npm install
+      version-bump-command: ''
       # The same checks test.yml runs. test-vendor.mjs drives the pinned CLI's
       # generator over this kit's own source, so a vendor-cli bump that would
       # change what consumers vendor fails HERE rather than in four consumers'
