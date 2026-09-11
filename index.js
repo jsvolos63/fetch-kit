@@ -4,13 +4,13 @@
 // Every app hand-rolls the same client fetch layer: an AbortController
 // timeout, exponential backoff with jitter, a transient-vs-deterministic
 // retry classification (retry 5xx/429, never 4xx or an abort), and — in the
-// apps that talk to flaky upstreams through public CORS proxies — an
-// in-flight request coalescer and a proxy fallback chain. Eight repos carry a
-// slightly different copy (Weather's typed HttpError, FlightCheck's coalescer
-// + Retry-After, JFS-Sports' proxy chain, Art-Gallery's withTimeout/lanes,
-// Surf-Tracker's cached feed race, market-monitor's one-line fetchWithTimeout,
-// Bears' proxy .catch chain, Zepbound's base64 codecs). This is the single,
-// tested copy of that core.
+// apps that poll the same upstream from two places — an in-flight request
+// coalescer. Eight repos carried a slightly different copy (Weather's typed
+// HttpError, FlightCheck's coalescer + Retry-After, Art-Gallery's
+// withTimeout/lanes, Surf-Tracker's cached feed race, market-monitor's
+// one-line fetchWithTimeout, and the three layers nothing kept — JFS-Sports'
+// and Bears' proxy chains, Zepbound's base64 codecs; see "Removed in v0.3.0"
+// below). This is the single, tested copy of that core.
 //
 // Pure ESM, dependency-free. The design is a small composable core plus opt-in
 // strategies, so an app takes only the layers it needs:
@@ -25,10 +25,16 @@
 //   fetchJson / fetchText         — fetchWithRetry + parse.
 //   createCoalescer()             — dedupe concurrent identical requests onto
 //                                   one in-flight promise (keyed by any string).
-//   fetchThroughProxies(url, o)   — direct-first CORS proxy fallback chain.
 //   parseRetryAfter(header)       — delta-seconds | HTTP-date → ms.
-//   encodeBase64Utf8 / decodeBase64Utf8 — multibyte-safe base64 (GitHub
-//                                   Contents API etc.); atob/btoa are Latin-1.
+//
+// Removed in v0.3.0, after a family-wide grep found ZERO call sites for either
+// (only the vendored copies of this file, which are the definition, not a use):
+// `fetchThroughProxies` — a direct-first CORS proxy fallback chain that handed
+// a caller's URL to third-party proxies with no validation, so it was standing
+// SSRF-adjacent surface in every consumer's shipped bundle for no one's
+// benefit — and `encodeBase64Utf8` / `decodeBase64Utf8`. Don't re-add either
+// speculatively; a consumer with a real need brings the code back with a call
+// site attached.
 //
 // Since v0.2.0 the kit also carries the family's client-side STORAGE
 // primitives (safe localStorage wrappers, quota-aware writes, JSON snapshots
@@ -42,7 +48,18 @@
 
 /** Thrown when a response arrives but is not ok. Carries the status, the URL,
  *  an optional body snippet, whether the retry layer classified it as
- *  transient, and a parsed Retry-After delay (ms) when the server sent one. */
+ *  transient, and a parsed Retry-After delay (ms) when the server sent one.
+ *
+ *  `.body` is UP TO 2 KB of the UPSTREAM's own error response, verbatim and
+ *  unredacted. It is there so a caller can read the server's message, not so
+ *  it can be displayed or logged: a failing endpoint's body routinely carries
+ *  things the app should not re-publish — a stack trace, a request echo with
+ *  the API key that was in the query string, an account identifier, another
+ *  user's record from a mis-scoped read. Treat it as untrusted, sensitive
+ *  text: never render it verbatim, never ship it to a log sink or an error
+ *  reporter, and prefer `.status` for anything a user or a logfile sees.
+ *  (`.url` is the requested URL, query string included, and deserves the same
+ *  care for the same reason.) */
 export class HttpError extends Error {
   constructor(status, url, { body = null, retryable = false, retryAfterMs = null } = {}) {
     super(`HTTP ${status} for ${url}`);
@@ -101,24 +118,6 @@ export function parseRetryAfter(headerValue) {
   const dateMs = Date.parse(text);
   if (Number.isFinite(dateMs)) return Math.min(RETRY_AFTER_CAP_MS, Math.max(0, dateMs - Date.now()));
   return null;
-}
-
-/** UTF-8-safe base64 encode. btoa is Latin-1 only, so multibyte text (emoji,
- *  accents) corrupts without this TextEncoder round-trip. */
-export function encodeBase64Utf8(str) {
-  const bytes = new TextEncoder().encode(str);
-  let bin = '';
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
-}
-
-/** UTF-8-safe base64 decode. `fatal: true` throws on malformed UTF-8 rather
- *  than silently substituting replacement characters. */
-export function decodeBase64Utf8(b64) {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 }
 
 // ───────────────────────── fetchWithTimeout ─────────────────────────
@@ -342,73 +341,6 @@ export function createCoalescer() {
   return run;
 }
 
-// ───────────────────────── proxy chain ─────────────────────────
-
-/** Direct-first CORS proxy fallback, the JFS-Sports topology (the most-used in
- *  the family). Tries the URL directly; an ok response wins, and a direct 4xx
- *  is taken as the real answer (the origin spoke — a proxy won't change a bad
- *  request). Only a 5xx or a thrown error falls through to the proxies, tried
- *  in order; the first ok response wins, else the best non-ok response seen,
- *  else the last error is rethrown. Returns the raw Response.
- *
- *  Options:
- *    proxies    array of `(url) => proxiedUrl` wrappers (required, non-empty)
- *    direct     try the origin directly first (default true)
- *    timeout    per-hop timeout ms
- *    signal, fetchImpl, ...init   as fetchWithTimeout
- *    onTrace(tag)  optional callback fed "direct=200" / "proxy0=502" / … for
- *                  diagnostics */
-export async function fetchThroughProxies(url, { proxies, direct = true, onTrace, ...fetchOpts } = {}) {
-  if (!Array.isArray(proxies) || proxies.length === 0) {
-    throw new Error('fetchThroughProxies: `proxies` must be a non-empty array of url-wrapper functions');
-  }
-  // A diagnostic callback must never be able to fail the request.
-  const trace = (tag) => {
-    if (typeof onTrace !== 'function') return;
-    try {
-      onTrace(tag);
-    } catch {
-      /* swallow — onTrace is best-effort diagnostics */
-    }
-  };
-  let bestNonOk = null;
-  let lastError = null;
-
-  // Build the hop list, computing each proxy URL lazily-but-defensively: a
-  // single wrapper that throws (bad template, malformed URL) must not sink the
-  // whole chain — the direct hop and the other proxies still get their turn.
-  const hops = [];
-  if (direct) hops.push({ tag: 'direct', url });
-  proxies.forEach((wrap, i) => {
-    let proxied;
-    try {
-      proxied = wrap(url);
-    } catch (err) {
-      trace(`proxy${i}!`);
-      lastError = err;
-      return;
-    }
-    hops.push({ tag: `proxy${i}`, url: proxied });
-  });
-
-  for (const hop of hops) {
-    try {
-      const res = await fetchWithTimeout(hop.url, fetchOpts);
-      trace(`${hop.tag}=${res.status}`);
-      if (res.ok) return res;
-      // A definitive client error from the origin is the answer; don't launder
-      // it through a proxy. (Only meaningful for the direct hop.)
-      if (hop.tag === 'direct' && res.status >= 400 && res.status < 500) return res;
-      bestNonOk = bestNonOk || res;
-    } catch (err) {
-      trace(`${hop.tag}!`);
-      lastError = err;
-    }
-  }
-  if (bestNonOk) return bestNonOk;
-  throw lastError || new Error(`fetchThroughProxies: every hop failed for ${url}`);
-}
-
 // ═════════════════════════ storage primitives ═════════════════════════
 //
 // Absorbed from @jfs/cache-kit (v0.2.0 of this kit, 2026-08) — the same move
@@ -517,22 +449,36 @@ export function safeSetItem(key, value, { ownedKeys = [] } = {}) {
 // ---------------------------------------------------------------------------
 //
 // Prototype-pollution defense for parsed localStorage entries: JSON.parse
-// materializes a `"__proto__"` (or `constructor`/`prototype`) JSON key as an
-// OWN property, and callers Object.assign / deep-merge the parsed data onto
-// app state — which invokes the real `__proto__` setter and would re-point the
-// consumer's prototype chain (or `Object.prototype` itself, for a deep merge).
+// materializes a `"__proto__"` JSON key as an OWN property, and callers
+// Object.assign / deep-merge the parsed data onto app state — which invokes
+// the real `__proto__` setter and would re-point the consumer's prototype
+// chain (or `Object.prototype` itself, for a deep merge).
 //
 // The strip must be TOTAL: an earlier version only cleaned the top-level
 // object, so `{"a":{"__proto__":{"isAdmin":true}}}` walked straight through
 // the guard one key deeper and polluted any consumer that deep-merged the
 // result. Ingestion therefore parses through `parseSafeJson`, whose reviver
-// drops the three dangerous keys at EVERY level (including inside arrays) —
-// one chokepoint that cannot miss a nesting depth. Well-formed values are
-// otherwise untouched: same shape, same values, ordinary prototypes, so
-// callers and round-trip tests still see plain objects. Shape validation still
-// runs on the parse result.
-const _POLLUTION_KEYS = ['__proto__', 'constructor', 'prototype'];
-const _isPollutionKey = (k) => k === '__proto__' || k === 'constructor' || k === 'prototype';
+// drops `__proto__` at EVERY level (including inside arrays) — one chokepoint
+// that cannot miss a nesting depth. Well-formed values are otherwise
+// untouched: same shape, same values, ordinary prototypes, so callers and
+// round-trip tests still see plain objects. Shape validation still runs on the
+// parse result.
+//
+// `__proto__` IS THE WHOLE LIST, and it used to be three. `constructor` and
+// `prototype` were stripped alongside it, which silently mangled well-formed
+// data: a cached record with a `constructor` field (a manufacturer, a build
+// constructor, a `{"constructor": {...}}` from any upstream that chose the
+// word) came back with that key missing and nothing said so. Neither name is
+// a vector the way `__proto__` is — JSON.parse creates them as ordinary own
+// data properties, and assigning one onto a target (`target.constructor = v`)
+// writes an own property too, poisoning nothing. What is dangerous is a merge
+// that RECURSES INTO an existing `target[k]` without an own-property check,
+// walking `Object` and then `Object.prototype`; that is the merge's bug to
+// fix (skip inherited keys), and it cannot be fixed here without deleting
+// data the consumer asked us to store. So the guard covers the key the
+// PARSER makes dangerous, and only that one.
+const _POLLUTION_KEYS = ['__proto__'];
+const _isPollutionKey = (k) => k === '__proto__';
 
 // JSON.parse reviver: returning undefined deletes the key from its holder, so
 // a dangerous key is removed at whatever depth it appears (array elements
@@ -542,16 +488,18 @@ function _pollutionReviver(key, value) {
     return _isPollutionKey(key) ? undefined : value;
 }
 
-/** JSON.parse with every `__proto__`/`constructor`/`prototype` key stripped at
- * every level. Throws on malformed JSON exactly like JSON.parse. */
+/** JSON.parse with every `__proto__` key stripped at every level. Throws on
+ * malformed JSON exactly like JSON.parse. */
 function parseSafeJson(raw) {
     return JSON.parse(raw, _pollutionReviver);
 }
 
 // Belt-and-braces for values that did NOT come through parseSafeJson: walks
-// own enumerable values (objects AND array elements) and deletes the dangerous
-// own keys at every level. Iterative with a WeakSet seen-guard (cyclic input is
-// visited once) and a depth cap, so a hostile shape can't hang or blow the
+// own enumerable values (objects AND array elements) and deletes an own
+// `__proto__` at every level. Same narrow list as the reviver, for the same
+// reason — a second pass that deleted more than the first would put the data
+// loss back one layer down. Iterative with a WeakSet seen-guard (cyclic input
+// is visited once) and a depth cap, so a hostile shape can't hang or blow the
 // stack. Mutates in place and returns the same reference.
 const _MAX_DEPOLLUTE_DEPTH = 64;
 function depollute(parsed) {

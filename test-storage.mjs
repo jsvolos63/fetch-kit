@@ -350,14 +350,15 @@ function deepMerge(target, source) {
     return target;
 }
 
-// Any own dangerous key anywhere in the tree fails the check.
+// An own `__proto__` anywhere in the tree fails the check. `constructor` and
+// `prototype` are NOT on this list: they are ordinary own data properties
+// after JSON.parse, harmless to assign, and the guard deliberately no longer
+// deletes them (see the note beside _POLLUTION_KEYS in index.js).
 function assertNoDangerousKeys(node, path = '$', seen = new WeakSet()) {
     if (node === null || typeof node !== 'object' || seen.has(node)) return;
     seen.add(node);
-    for (const k of ['__proto__', 'constructor', 'prototype']) {
-        assert.equal(Object.prototype.hasOwnProperty.call(node, k), false,
-            `own "${k}" survived at ${path}`);
-    }
+    assert.equal(Object.prototype.hasOwnProperty.call(node, '__proto__'), false,
+        `own "__proto__" survived at ${path}`);
     for (const [k, v] of Object.entries(node)) assertNoDangerousKeys(v, `${path}.${k}`, seen);
 }
 
@@ -407,14 +408,47 @@ describe('prototype-pollution defense strips at every nesting level', () => {
         assert.equal({}.polluted, undefined);
     });
 
-    test('readTtlJson strips nested "constructor" and "prototype" too', () => {
+    // The guard used to drop `constructor` and `prototype` alongside
+    // `__proto__`, which silently ate a legitimate field of either name —
+    // data loss with no error, on data the consumer asked us to store.
+    // Neither is a parser-made vector: JSON.parse materializes them as
+    // ordinary own data properties and assigning one writes an own property,
+    // so they must survive a round trip intact, at every depth and inside
+    // arrays.
+    test('a legitimate "constructor" field round-trips (it is not a vector)', () => {
+        installLocalStorage(makeFakeLocalStorage());
+        const payload = { constructor: { x: 1 } };
+        assert.equal(writeTtlJson('ctor', payload), true);
+        const data = readTtlJson('ctor', 60_000);
+        assert.deepEqual(data, payload);
+        assert.equal(Object.prototype.hasOwnProperty.call(data, 'constructor'), true);
+        assert.deepEqual(data.constructor, { x: 1 });
+        assert.equal(Object.getPrototypeOf(data), Object.prototype);
+        assertNoDangerousKeys(data);
+        deepMerge({}, data);
+        assert.equal({}.polluted, undefined);
+    });
+
+    test('nested "constructor" / "prototype" fields survive, at depth and in arrays', () => {
         const ls = installLocalStorage(makeFakeLocalStorage());
-        ls.setItem('poison', `{"ts":${Date.now()},"data":{"a":{"constructor":{"prototype":{"polluted":1}}},` +
-            `"b":{"prototype":{"polluted":1}},"list":[{"constructor":{"polluted":1}}]}}`);
-        const data = readTtlJson('poison', 60_000);
-        assert.deepEqual(data.a, {});
-        assert.deepEqual(data.b, {});
-        assert.deepEqual(data.list, [{}]);
+        ls.setItem('keep', `{"ts":${Date.now()},"data":{"a":{"constructor":{"prototype":{"kept":1}}},` +
+            `"b":{"prototype":{"kept":2}},"list":[{"constructor":{"kept":3}}]}}`);
+        const data = readTtlJson('keep', 60_000);
+        assert.equal(data.a.constructor.prototype.kept, 1);
+        assert.equal(data.b.prototype.kept, 2);
+        assert.equal(data.list[0].constructor.kept, 3);
+        assertNoDangerousKeys(data);
+        deepMerge({}, data);
+        assert.equal({}.polluted, undefined);
+    });
+
+    test('an own "constructor" alongside a poisoned __proto__: one goes, one stays', () => {
+        const ls = installLocalStorage(makeFakeLocalStorage());
+        ls.setItem('mixed',
+            `{"ts":${Date.now()},"data":{"a":{"constructor":"Acme","__proto__":{"polluted":1}}}}`);
+        const data = readTtlJson('mixed', 60_000);
+        assert.equal(data.a.constructor, 'Acme');
+        assert.equal(Object.prototype.hasOwnProperty.call(data.a, '__proto__'), false);
         assertNoDangerousKeys(data);
         deepMerge({}, data);
         assert.equal({}.polluted, undefined);

@@ -9,10 +9,9 @@ family of buildless static PWAs — the client-side twin of
 Every app in the family hand-rolls the same client fetch layer: an
 `AbortController` timeout, exponential backoff with jitter, a
 transient-vs-deterministic retry classification (retry 5xx/429, never a 4xx or
-an abort), and — in the apps that reach flaky upstreams through public CORS
-proxies — an in-flight request coalescer and a proxy fallback chain. Eight
-repos carry a slightly different copy of that core. This package is the single,
-tested copy.
+an abort), and — in the apps that poll one upstream from two places — an
+in-flight request coalescer. Eight repos carry a slightly different copy of
+that core. This package is the single, tested copy.
 
 ## API
 
@@ -53,6 +52,15 @@ are injectable seams for tests. Backoff is
 ### Typed errors
 
 - **`HttpError`** — `.status`, `.url`, `.body`, `.retryable`, `.retryAfterMs`.
+  **`.body` is up to 2 KB of the upstream's own error response, verbatim and
+  unredacted** — it is there so a caller can *read* the server's message, not
+  so it can be displayed or logged. A failing endpoint's body routinely
+  carries a stack trace, a request echo with the API key that was in the query
+  string, an account identifier, or another user's record from a mis-scoped
+  read. Treat it as untrusted, sensitive text: don't render it verbatim, don't
+  ship it to a log sink or an error reporter, and prefer `.status` for
+  anything a user or a logfile sees. `.url` carries the query string and
+  deserves the same care.
 - **`TimeoutError`** — `.url`, `.timeoutMs`. Never retried by default (a timeout
   means a slow upstream; retrying compounds latency — flip it back on with
   `retryOn` if you want the old Weather behavior).
@@ -69,30 +77,6 @@ const p = coalesce(url, () => fetchJson(url));
 An in-flight coalescer (not a cache): concurrent calls for the same key share
 one promise, and the entry is removed as soon as it settles. `run.inFlight`
 exposes the live `Map`.
-
-### CORS proxy fallback
-
-```js
-import { fetchThroughProxies } from './fetch-kit/index.js';
-const PROXIES = [
-  (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
-  (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-];
-const res = await fetchThroughProxies(feedUrl, { proxies: PROXIES, timeout: 8000 });
-const xml = await res.text();
-```
-
-Direct-first: an ok direct response wins, a direct 4xx is taken as the real
-answer (the origin spoke — a proxy won't fix a bad request), and only a 5xx or
-a thrown error falls through to the proxies in order. Returns the raw
-`Response`. `onTrace(tag)` receives `"direct=200"` / `"proxy0=502"` / … for
-diagnostics; `direct: false` skips the origin.
-
-### Base64 codecs
-
-`encodeBase64Utf8(str)` / `decodeBase64Utf8(b64)` — multibyte-safe base64
-(`atob`/`btoa` are Latin-1 only), for the GitHub Contents API and friends.
-The decoder is `fatal`, so malformed UTF-8 throws rather than corrupting.
 
 ## Storage primitives (absorbed from @jfs/cache-kit, v0.2.0)
 
@@ -116,10 +100,26 @@ this section by changing import paths, not call sites:
 
 Both snapshot shapes and both freshness comparisons are deliberate: existing
 users' stored data keeps parsing after adoption. Every read parses through a
-prototype-pollution-stripping reviver (`__proto__` / `constructor` /
-`prototype` dropped at every depth). No IndexedDB store — cache-kit's old
+prototype-pollution-stripping reviver — **`__proto__` dropped at every depth,
+and only `__proto__`.** That is the one key `JSON.parse` turns into a live
+prototype write; `constructor` and `prototype` arrive as ordinary own data
+properties and are left alone, because stripping them (which this kit did
+before v0.3.0) silently ate legitimate fields of those names. A merge that
+recurses into an existing `target[k]` without an own-property check is the
+thing to fix in the merge. No IndexedDB store — cache-kit's old
 tier 2 lives on as `JFS-Sports/cache-store-idb.js`; take that file back if a
 second and third app ever need one.
+
+## Removed in v0.3.0
+
+`fetchThroughProxies` (a direct-first CORS proxy fallback chain) and
+`encodeBase64Utf8` / `decodeBase64Utf8` are gone. A family-wide grep found
+**zero** call sites for any of the three — the only hits were the vendored
+copies of this file, which are the definition, not a use. The proxy chain in
+particular forwarded a caller's URL to third-party proxies with no validation,
+so it was standing SSRF-adjacent surface in every consumer's shipped bundle
+for nobody's benefit. Don't re-add either speculatively: bring the code back
+with a call site attached.
 
 ## How it's consumed
 
