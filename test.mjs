@@ -10,14 +10,11 @@ import {
   TimeoutError,
   sleep,
   parseRetryAfter,
-  encodeBase64Utf8,
-  decodeBase64Utf8,
   fetchWithTimeout,
   fetchWithRetry,
   fetchJson,
   fetchText,
   createCoalescer,
-  fetchThroughProxies,
 } from './index.js';
 
 // ───────────────────────── fakes ─────────────────────────
@@ -133,23 +130,6 @@ test('fetchWithRetry never waits past the Retry-After cap even for a huge header
     retries: 1,
   });
   assert.ok(delays[0] <= 120000, `delay should be clamped to the cap, got ${delays[0]}`);
-});
-
-// ───────────────────────── base64 codecs ─────────────────────────
-
-test('base64 codecs round-trip multibyte text', () => {
-  for (const s of ['hello', 'café ☕ 🐻', '{"a":1,"b":"—"}\n', '']) {
-    assert.equal(decodeBase64Utf8(encodeBase64Utf8(s)), s);
-  }
-  // Genuinely UTF-8, not Latin-1: '🐻' is 4 UTF-8 bytes, so the base64 decodes
-  // to 4 bytes (matching Buffer's utf-8 encoding), not a mojibake shorter run.
-  assert.equal(encodeBase64Utf8('🐻'), Buffer.from('🐻', 'utf-8').toString('base64'));
-});
-
-test('decodeBase64Utf8 throws on malformed UTF-8', () => {
-  // 0xFF is not valid UTF-8; fatal decoder must reject.
-  const bad = btoa(String.fromCharCode(0xff));
-  assert.throws(() => decodeBase64Utf8(bad));
 });
 
 // ───────────────────────── fetchWithTimeout ─────────────────────────
@@ -365,77 +345,6 @@ test('createCoalescer: a rejection clears the entry and propagates', async () =>
   assert.equal(coalesce.inFlight.size, 0);
 });
 
-// ───────────────────────── proxy chain ─────────────────────────
-
-const PROXIES = [
-  (u) => `https://p1/?url=${encodeURIComponent(u)}`,
-  (u) => `https://p2/?url=${encodeURIComponent(u)}`,
-];
-
-test('fetchThroughProxies: direct ok wins, no proxy hit', async () => {
-  const impl = scriptedFetch([makeResponse('ok')]);
-  const res = await fetchThroughProxies('https://origin', { proxies: PROXIES, fetchImpl: impl });
-  assert.equal(res.ok, true);
-  assert.equal(impl.calls.length, 1);
-  assert.equal(impl.calls[0], 'https://origin');
-});
-
-test('fetchThroughProxies: direct 4xx is taken as the answer (no proxy)', async () => {
-  const impl = scriptedFetch([makeResponse('bad', { ok: false, status: 403 })]);
-  const res = await fetchThroughProxies('https://origin', { proxies: PROXIES, fetchImpl: impl });
-  assert.equal(res.status, 403);
-  assert.equal(impl.calls.length, 1);
-});
-
-test('fetchThroughProxies: 5xx falls through to a proxy', async () => {
-  const impl = scriptedFetch([
-    makeResponse('down', { ok: false, status: 503 }),
-    makeResponse('via proxy'),
-  ]);
-  const tags = [];
-  const res = await fetchThroughProxies('https://origin', {
-    proxies: PROXIES,
-    fetchImpl: impl,
-    onTrace: (t) => tags.push(t),
-  });
-  assert.equal(res.ok, true);
-  assert.equal(impl.calls.length, 2);
-  assert.match(impl.calls[1], /^https:\/\/p1/);
-  assert.deepEqual(tags, ['direct=503', 'proxy0=200']);
-});
-
-test('fetchThroughProxies: a thrown direct error falls through', async () => {
-  const impl = scriptedFetch([new TypeError('CORS'), makeResponse('via proxy')]);
-  const res = await fetchThroughProxies('https://origin', { proxies: PROXIES, fetchImpl: impl });
-  assert.equal(res.ok, true);
-  assert.equal(impl.calls.length, 2);
-});
-
-test('fetchThroughProxies: all fail → best non-ok, else throw', async () => {
-  const impl = scriptedFetch([
-    makeResponse('a', { ok: false, status: 502 }),
-    makeResponse('b', { ok: false, status: 500 }),
-    makeResponse('c', { ok: false, status: 504 }),
-  ]);
-  const res = await fetchThroughProxies('https://origin', { proxies: PROXIES, fetchImpl: impl });
-  assert.equal(res.status, 502); // first non-ok retained
-
-  const throwing = scriptedFetch([new Error('x'), new Error('y'), new Error('z')]);
-  await assert.rejects(fetchThroughProxies('https://origin', { proxies: PROXIES, fetchImpl: throwing }));
-});
-
-test('fetchThroughProxies: direct:false skips the origin', async () => {
-  const impl = scriptedFetch([makeResponse('via proxy')]);
-  const res = await fetchThroughProxies('https://origin', { proxies: PROXIES, direct: false, fetchImpl: impl });
-  assert.equal(res.ok, true);
-  assert.match(impl.calls[0], /^https:\/\/p1/);
-});
-
-test('fetchThroughProxies: requires a non-empty proxies array', async () => {
-  await assert.rejects(fetchThroughProxies('https://x', { proxies: [] }));
-  await assert.rejects(fetchThroughProxies('https://x', {}));
-});
-
 // ───────────────────────── hardening ─────────────────────────
 
 test('fetchWithTimeout removes the external-signal listener on settle (no leak)', async () => {
@@ -507,17 +416,6 @@ test('HttpError carries a bounded snippet of the non-ok body', async () => {
   );
 });
 
-test('fetchThroughProxies survives a throwing proxy wrapper (chain continues)', async () => {
-  const impl = scriptedFetch([makeResponse('via good proxy')]);
-  const proxies = [
-    () => { throw new Error('bad template'); },
-    (u) => `https://good/?u=${encodeURIComponent(u)}`,
-  ];
-  const res = await fetchThroughProxies('https://origin', { proxies, direct: false, fetchImpl: impl });
-  assert.equal(res.ok, true);
-  assert.match(impl.calls[0], /^https:\/\/good/);
-});
-
 test('fetchWithRetry tolerates a transient response with no headers object', async () => {
   // A non-spec Response-like (no `headers`) on a retryable status must not crash
   // the Retry-After lookup — it just falls back to the computed backoff.
@@ -531,14 +429,4 @@ test('fetchWithRetry tolerates a transient response with no headers object', asy
     fetchWithRetry('https://x', { fetchImpl: impl, sleepImpl: noSleep, retries: 0 }),
     (err) => err instanceof HttpError && err.status === 503,
   );
-});
-
-test('fetchThroughProxies swallows a throwing onTrace', async () => {
-  const impl = scriptedFetch([makeResponse('ok')]);
-  const res = await fetchThroughProxies('https://origin', {
-    proxies: PROXIES,
-    fetchImpl: impl,
-    onTrace: () => { throw new Error('diag boom'); },
-  });
-  assert.equal(res.ok, true);
 });

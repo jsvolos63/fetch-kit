@@ -3,11 +3,47 @@
 Shared, dependency-free browser fetch **and storage** primitives for the JFS
 family of buildless static PWAs — the client twin of netlify-kit's
 `fetchWithRetry`: AbortController timeout, exponential backoff with
-jitter, typed `HttpError`/`TimeoutError`, in-flight request coalescing, a
-direct-first CORS proxy fallback chain, `Retry-After` parsing, and
-multibyte-safe base64 codecs. Consumers vendor this kit via its own CLI
+jitter, typed `HttpError`/`TimeoutError`, in-flight request coalescing, and
+`Retry-After` parsing. Consumers vendor this kit via its own CLI
 rather than installing it at runtime, so a change here reaches an app only
 once that app bumps its pin and re-runs `vendor:sync`.
+
+## v0.3.0 dropped three exports nobody called
+
+`fetchThroughProxies` (a direct-first CORS proxy fallback chain) and
+`encodeBase64Utf8` / `decodeBase64Utf8` are gone. A grep across every repo in
+`/home/user/*` found **zero** call sites: the only hits were the vendored
+copies of this file, which are the DEFINITION, not a use — check for that
+before reading a grep as evidence of a consumer. The proxy chain was the one
+worth removing on its own merits, not just as dead weight: it handed a
+caller's URL to third-party CORS proxies with no validation of either, so it
+was standing SSRF-adjacent surface in every consumer's shipped bundle.
+
+Don't re-add either speculatively. A kit whose surface grows on "an app might
+want this" is a kit every consumer ships bytes for and nobody reads; the code
+comes back when a call site comes with it.
+
+## The pollution guard strips `__proto__`, and ONLY `__proto__`
+
+`parseSafeJson`'s reviver (and `depollute`, the belt-and-braces pass behind
+it) used to drop `constructor` and `prototype` as well, at every depth. That
+was a silent data-mangler: a stored record with a legitimate `constructor`
+field came back missing it, with nothing raised and nothing logged.
+
+`__proto__` is the only one of the three that `JSON.parse` turns into a live
+prototype write — it materializes as an OWN property, and the consumer's
+`Object.assign` / deep-merge then fires the real setter. `constructor` and
+`prototype` arrive as ordinary own data properties, and assigning one onto a
+target writes an own property too. What IS dangerous is a merge that recurses
+INTO an existing `target[k]` without an own-property check, walking `Object`
+and then `Object.prototype` — and that is the merge's bug to fix, not
+something this kit can fix by deleting data a consumer asked it to store.
+
+Both layers carry the same one-key list on purpose: a second pass that
+deleted more than the first would simply put the data loss back one layer
+down. `test-storage.mjs` pins both halves — every nesting depth and array
+element still loses `__proto__`, and a `{"constructor": {...}}` round-trips
+intact.
 
 ## This kit ABSORBED @jfs/cache-kit (v0.2.0)
 
