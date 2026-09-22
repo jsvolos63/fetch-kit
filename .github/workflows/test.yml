@@ -20,6 +20,7 @@ jobs:
     uses: jsvolos63/vendor-cli/.github/workflows/family-ci.yml@main
     with:
       verify-kit-pins: true
+      maintenance-check: true
       run: |
         node --check index.js
         npm run lint
