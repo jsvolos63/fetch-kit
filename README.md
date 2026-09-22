@@ -10,8 +10,10 @@ Every app in the family hand-rolls the same client fetch layer: an
 `AbortController` timeout, exponential backoff with jitter, a
 transient-vs-deterministic retry classification (retry 5xx/429, never a 4xx or
 an abort), and — in the apps that poll one upstream from two places — an
-in-flight request coalescer. Eight repos carry a slightly different copy of
-that core. This package is the single, tested copy.
+in-flight request coalescer. Eight repos grew a slightly different copy of
+that core; this package is the single, tested copy. Four apps vendor it today
+(FlightCheck, John's News, Weather, market-monitor) — the rest still carry
+their own layer, or needed none of it.
 
 ## API
 
@@ -132,18 +134,46 @@ imports it directly. ES-module apps vendor the verbatim ESM copy:
 "vendor:check": "jfs-fetch-kit-vendor --format esm --out fetch-kit/index.js --check"
 ```
 
+An ESM app that uses a few exports can narrow its copy with `--pick` — the
+same list in both scripts, or `vendor:check` validates a different generation
+than `vendor:sync` performs:
+
+```json
+"vendor:sync":  "jfs-fetch-kit-vendor --format esm --pick fetchJson,fetchText,HttpError --out vendor/fetch-kit/index.js",
+"vendor:check": "jfs-fetch-kit-vendor --format esm --pick fetchJson,fetchText,HttpError --out vendor/fetch-kit/index.js --check"
+```
+
+A narrowed copy is tree-shaken to the reachable body (John's News ships
+~8 KB of the ~30 KB full surface this way) and, unlike a full-surface copy,
+is esbuild's REPRINT of the source rather than the source verbatim — so it is
+the shape a vendor-cli pin bump can move by a byte, and the one to diff after
+re-vendoring. Import a name that is not in the pick list and the import is a
+link error at load, so grow the list in the same commit as the import.
+
 Classic-script apps use `--format global --name FetchKit` (exposes
-`globalThis.FetchKit`); CommonJS functions use `--format cjs`. (A fourth
-`bare` format existed through vendor-cli 0.18.x with no consumer and was
-removed in 0.19.0.) The exposed surface is derived from `index.js`'s own `export`
-declarations, never a hand-maintained list; `npm run vendor:check` fails CI on
-drift.
+`globalThis.FetchKit`); CommonJS functions use `--format cjs`. `--pick` works
+the same way in all three formats. (A fourth `bare` format existed through
+vendor-cli 0.18.x with no consumer and was removed in 0.19.0.) The exposed
+surface is derived from `index.js`'s own `export` declarations, never a
+hand-maintained list; `npm run vendor:check` fails CI on drift.
+
+Removing or renaming an export breaks a consumer at its next re-vendor — a
+narrowing consumer's `vendor:sync` refuses the unknown pick, and a
+full-surface consumer regenerates cleanly and then fails to link in the
+browser. `test-consumers.mjs` keeps a snapshot of what each consumer imports
+so that change fails here first; see its header before editing it.
 
 ## Test
 
 ```
-npm test        # node --test test.mjs test-storage.mjs test-vendor.mjs
+npm test        # node --test test.mjs test-storage.mjs test-vendor.mjs test-consumers.mjs
 ```
 
 The retry/backoff/timeout logic runs through injected `fetchImpl` / `sleepImpl`
-/ `random` seams, so the suite touches no network and no real timers.
+/ `random` seams, so the suite touches no network and waits out no real
+backoff (the timeout cases arm real timers of a few milliseconds). The
+option defaults written out above are checked against what the code does, in
+`test.mjs` — change a default and this README in the same commit.
+`test-vendor.mjs` and `test-consumers.mjs` drive the real vendoring CLI, so run
+`npm install` first (the CLI is a GitHub git pin, so that install needs
+network).
