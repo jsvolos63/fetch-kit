@@ -26,7 +26,7 @@
     "bin"
   ],
   "scripts": {
-    "test": "node --test test.mjs test-storage.mjs test-vendor.mjs",
+    "test": "node --test test.mjs test-storage.mjs test-vendor.mjs test-consumers.mjs",
     "lint": "eslint .",
     "kit-pins:bump": "jfs-bump-kit-pins"
   },

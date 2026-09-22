@@ -20,6 +20,11 @@ jobs:
     uses: jsvolos63/vendor-cli/.github/workflows/family-ci.yml@main
     with:
       verify-kit-pins: true
+      # `dependencies` is not empty: @jfs/vendor-cli sits there on purpose (the
+      # bin shim resolves it from inside this package) and pulls esbuild, so a
+      # consumer installing this kit installs both. Gate high/critical
+      # advisories in that shipped tree; dev-only advisories never gate.
+      prod-audit: true
       maintenance-check: true
       run: |
         node --check index.js
