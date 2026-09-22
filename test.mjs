@@ -1,10 +1,12 @@
 // Tests for @jfs/fetch-kit. Run with: node --test test.mjs  (or: npm test)
 // Uses node:test — no framework deps. The retry/backoff/timeout logic is
 // exercised through injected fetchImpl/sleepImpl/random seams so nothing here
-// touches the network or a real timer.
+// touches the network or waits out a real backoff. The timeout cases arm real
+// timers of a few milliseconds; the default-timeout case uses mock timers.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   HttpError,
   TimeoutError,
@@ -429,4 +431,99 @@ test('fetchWithRetry tolerates a transient response with no headers object', asy
     fetchWithRetry('https://x', { fetchImpl: impl, sleepImpl: noSleep, retries: 0 }),
     (err) => err instanceof HttpError && err.status === 503,
   );
+});
+
+// ───────────────────────── README's documented defaults ─────────────────────────
+//
+// README.md writes the option defaults out as numbers, because a changed default
+// reaches four apps' upstream call volume (retries against Finnhub's 60/min,
+// FlightAware's billed AeroAPI, Google's per-element billing) at their next
+// re-vendor with nothing here able to notice. So the documented numbers are
+// checked against what the code DOES, not against the constants' spelling.
+// A README the regexes cannot read fails — a doc check that could not run must
+// never pass.
+
+function readmeDefaults() {
+  const readme = readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+  const grab = (re, what) => {
+    const m = readme.match(re);
+    assert.ok(m, `README.md no longer documents the ${what} default in the form this test reads`);
+    return m[1];
+  };
+  return {
+    timeout: Number(grab(/`timeout` \(default (\d+)\)/, 'timeout')),
+    retries: Number(grab(/`retries` \(default (\d+)\)/, 'retries')),
+    retryStatuses: grab(/`retryStatuses` \(default `\[([\d,\s]+)\]`\)/, 'retryStatuses')
+      .split(',').map((n) => Number(n.trim())),
+    retryBaseMs: Number(grab(/`retryBaseMs` \(default (\d+)\)/, 'retryBaseMs')),
+    jitter: Number(grab(/`jitter` \(default ([\d.]+)\)/, 'jitter')),
+    respectRetryAfter: grab(/`respectRetryAfter` \(default (true|false)\)/, 'respectRetryAfter') === 'true',
+  };
+}
+
+test('README defaults: retries, retryBaseMs and jitter are what fetchWithRetry does', async () => {
+  const doc = readmeDefaults();
+  const delays = [];
+  const impl = scriptedFetch([makeResponse('busy', { ok: false, status: doc.retryStatuses[0] })]);
+  await assert.rejects(
+    fetchWithRetry('https://x', { fetchImpl: impl, sleepImpl: async (ms) => { delays.push(ms); }, random: () => 1 }),
+    (err) => err instanceof HttpError,
+  );
+  assert.equal(impl.calls.length, doc.retries + 1, 'attempts = documented retries + 1');
+  // random() = 1 is the full jitter: base + base * jitter, base doubling per attempt.
+  const expected = Array.from({ length: doc.retries }, (_, attempt) => {
+    const base = doc.retryBaseMs * 2 ** attempt;
+    return base + 1 * base * doc.jitter;
+  });
+  assert.deepEqual(delays, expected);
+});
+
+test('README defaults: retryStatuses is exactly the documented set', async () => {
+  const doc = readmeDefaults();
+  const retried = [];
+  for (let status = 400; status < 600; status++) {
+    const impl = scriptedFetch([makeResponse('', { ok: false, status }), makeResponse({ ok: 1 })]);
+    try {
+      await fetchWithRetry('https://x', { fetchImpl: impl, sleepImpl: noSleep, retries: 1 });
+      retried.push(status);
+    } catch (err) {
+      assert.ok(err instanceof HttpError && err.status === status, `status ${status} must throw its own HttpError`);
+    }
+  }
+  assert.deepEqual(retried, [...doc.retryStatuses].sort((a, b) => a - b));
+});
+
+test('README defaults: respectRetryAfter is on unless turned off', async () => {
+  const doc = readmeDefaults();
+  const delays = [];
+  const impl = scriptedFetch([
+    makeResponse('busy', { ok: false, status: 429, headers: { 'Retry-After': '7' } }),
+    makeResponse({ ok: 1 }),
+  ]);
+  await fetchWithRetry('https://x', {
+    fetchImpl: impl, sleepImpl: async (ms) => { delays.push(ms); }, random: zeroRandom, retries: 1,
+  });
+  assert.equal(delays[0] === 7000, doc.respectRetryAfter);
+});
+
+test('README defaults: fetchWithTimeout arms the documented timeout', async (t) => {
+  const doc = readmeDefaults();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const impl = (_url, init) =>
+    new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => {
+        const e = new Error('aborted');
+        e.name = 'AbortError';
+        reject(e);
+      });
+    });
+  let settled = false;
+  const pending = fetchWithTimeout('https://slow', { fetchImpl: impl }).finally(() => { settled = true; });
+  t.mock.timers.tick(doc.timeout - 1);
+  // setImmediate is not mocked, so this drains every pending microtask: an
+  // abort that had fired early would have settled `pending` by now.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'must not abort before the documented timeout');
+  t.mock.timers.tick(1);
+  await assert.rejects(pending, (err) => err instanceof TimeoutError && err.timeoutMs === doc.timeout);
 });

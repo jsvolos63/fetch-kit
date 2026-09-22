@@ -36,10 +36,14 @@ jobs:
       # skip the app-version bump.
       vendor-sync-command: npm install
       version-bump-command: ''
-      # The same checks test.yml runs. test-vendor.mjs drives the pinned CLI's
-      # generator over this kit's own source, so a vendor-cli bump that would
-      # change what consumers vendor fails HERE rather than in four consumers'
-      # `vendor:sync`.
+      # The same checks test.yml runs — all three, lint included: a bump PR
+      # opened with the default token fires no pull_request CI, so this step
+      # is the only gate the merge gets. test-vendor.mjs and test-consumers.mjs
+      # drive the pinned CLI's generator over this kit's own source (the
+      # latter in the exact narrowed shapes two consumers ship), so a
+      # vendor-cli bump that would change what consumers vendor fails HERE
+      # rather than in four consumers' `vendor:sync`.
       check-command: |
         node --check index.js
+        npm run lint
         npm test

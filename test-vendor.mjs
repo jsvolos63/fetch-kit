@@ -87,8 +87,16 @@ test('global format: parseable classic script exposing every export on the named
 
 test('global format: --name is required and validated', () => {
   const dir = freshDir();
-  assert.notEqual(run(['--format', 'global', '--out', 'x.js'], dir).status, 0);
-  assert.notEqual(run(['--format', 'global', '--name', 'not a name', '--out', 'x.js'], dir).status, 0);
+  // Match the reason as well as the exit code: with no CLI installed the shim
+  // exits non-zero on ERR_MODULE_NOT_FOUND, which an exit-code-only assertion
+  // reads as a pass.
+  const missing = run(['--format', 'global', '--out', 'x.js'], dir);
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /requires --name/);
+  const invalid = run(['--format', 'global', '--name', 'not a name', '--out', 'x.js'], dir);
+  assert.notEqual(invalid.status, 0);
+  assert.match(invalid.stderr, /--name must be a valid identifier/);
+  assert.ok(!existsSync(join(dir, 'x.js')), 'nothing may be written');
 });
 
 test('global format: --pick narrows the surface and rejects unknown names', () => {
@@ -138,9 +146,49 @@ test('--check: passes in sync, fails on drift, fails when missing', () => {
   assert.match(drift.stderr, /out of sync/);
 });
 
-test('argument validation: bad format, missing --out, --pick outside global', () => {
+test('argument validation: bad format, missing --out, unknown --pick name', () => {
   const dir = freshDir();
-  assert.notEqual(run(['--format', 'nope', '--out', 'x.js'], dir).status, 0);
-  assert.notEqual(run(['--format', 'esm'], dir).status, 0);
-  assert.notEqual(run(['--format', 'esm', '--out', 'x.js', '--pick', 'a'], dir).status, 0);
+  const badFormat = run(['--format', 'nope', '--out', 'x.js'], dir);
+  assert.notEqual(badFormat.status, 0);
+  assert.match(badFormat.stderr, /--format must be one of/);
+  const noOut = run(['--format', 'esm'], dir);
+  assert.notEqual(noOut.status, 0);
+  assert.match(noOut.stderr, /--out/);
+
+  // `a` is refused because it is not an export of this kit — NOT because
+  // --pick is unavailable in esm. This case used to be named "--pick outside
+  // global" and assert only a non-zero exit, a rule vendor-cli retired in
+  // 0.12.0; it kept passing on the unknown name alone. Match the reason, so a
+  // missing module or a pin regression can't hide behind the same exit code.
+  const unknown = run(['--format', 'esm', '--out', 'x.js', '--pick', 'a'], dir);
+  assert.notEqual(unknown.status, 0);
+  assert.match(unknown.stderr, new RegExp(`not exported by ${pkg.name.replace('/', '\\/')}`));
+  assert.ok(!existsSync(join(dir, 'x.js')), 'nothing may be written on a refused pick');
+});
+
+test('esm format: --pick narrows the surface and tree-shakes the body', () => {
+  const dir = freshDir();
+  const pick = NAMES[0];
+
+  const full = run(['--format', 'esm', '--out', 'full.js'], dir);
+  assert.equal(full.status, 0, full.stderr);
+
+  const picked = run(['--format', 'esm', '--pick', pick, '--out', 'picked.js'], dir);
+  assert.equal(picked.status, 0, picked.stderr);
+  const pickedFile = join(dir, 'picked.js');
+  const out = readFileSync(pickedFile, 'utf8');
+  assert.equal(syntaxCheck(pickedFile).status, 0, 'narrowed esm output must parse');
+
+  // A narrowed esm build ends in one aggregate `export {\n  name,\n};` list —
+  // bare names, not the `name: value` pairs of the global/cjs surface maps.
+  const idx = out.lastIndexOf('export {');
+  assert.notEqual(idx, -1, 'narrowed esm output must carry an aggregate export list');
+  const exported = [...out.slice(idx).matchAll(/^  ([A-Za-z0-9_$]+)(?: as ([A-Za-z0-9_$]+))?,$/gm)]
+    .map((m) => m[2] || m[1]);
+  assert.deepEqual(exported, [pick], 'a narrowed esm build must expose exactly the picked export');
+
+  // The body, not just the surface, has to shrink — or the narrowed copy is
+  // shipped bytes the consumer never calls.
+  const fullBytes = readFileSync(join(dir, 'full.js'), 'utf8').length;
+  assert.ok(out.length < fullBytes, `narrowed esm build must be tree-shaken (${out.length} vs ${fullBytes} bytes)`);
 });

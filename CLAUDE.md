@@ -85,10 +85,13 @@ effect). `no-regex-spaces` is off, as in the sibling kits: the vendor suite
 matches a known two-space indent in generated output.
 
 One note for whoever fixes a finding here next. `const ls =
-installLocalStorage(makeFakeLocalStorage());` appears SIXTEEN times in
-`test-storage.mjs`, and `ls` is genuinely used in every one of them now that
-the one unused binding is fixed — a find-and-replace on that line to silence
-a future finding breaks every other test. Patch by line, not by text.
+installLocalStorage(makeFakeLocalStorage());` appears 17 times verbatim in
+`test-storage.mjs` (20 `const ls = installLocalStorage` bindings, counting the
+three calls that span lines), and `ls` is genuinely used in every one of them
+now that the one unused binding is fixed — a find-and-replace on that line to
+silence a future finding breaks every other test. Patch by line, not by text.
+(This paragraph said SIXTEEN until 2026-09-22; if the count here disagrees
+with a `grep -c`, trust the grep — the warning is the point, not the number.)
 
 <!-- jfs-family-conventions:start — managed by jfs-claude-md-sync; edit family/family-conventions.md in @jfs/vendor-cli -->
 

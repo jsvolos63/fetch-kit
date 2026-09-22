@@ -3,19 +3,20 @@
 This kit has no deploy, no upstream feed, no key and no user. What maintenance
 here turns on is the opposite shape: one pin in `dependencies` that decides
 which vendoring generator four consumer apps run, a delivery pipeline that has
-failed **every scheduled run since it was created** with nothing said anywhere,
-and the fact that renaming or dropping an export is a breaking change this
-repo's CI structurally cannot see — it lands in a consumer's `vendor:sync`, not
-here.
+failed **every run since it was created** with nothing said anywhere, and the
+fact that renaming or dropping an export is a breaking change that lands in a
+consumer's `vendor:sync` (or, for a full-surface consumer, its browser) rather
+than here — which `test-consumers.mjs` now turns into a failure here first,
+against a snapshot of what the four consumers import.
 
 ## What runs by itself
 
 | Automation | Fires | Lands by itself | Leaves for a session | How a failure would be noticed |
 | --- | --- | --- | --- | --- |
-| `.github/workflows/test.yml` → vendor-cli's `family-ci.yml@main` (`verify-kit-pins: true`, `version-guard-paths: index.js bin`, and as of this commit `maintenance-check: true`) | push to `main`, every `pull_request`, `workflow_dispatch` | — it *is* the gate | nothing | red on the PR or the commit. The only automation here whose failure appears where somebody is already looking. |
-| `.github/workflows/kit-pin-bump.yml` (`cron: '41 6 * * 1'`, Mondays ~06:41 UTC) + dispatch → vendor-cli's `kit-pin-bump.yml@main` | weekly | the one `@jfs/vendor-cli` pin, `package-lock.json`, the CLAUDE.md conventions block, the PR, the squash-merge | nothing, when it works | **nothing.** It has never worked. See below. |
+| `.github/workflows/test.yml` → vendor-cli's `family-ci.yml@main` (`verify-kit-pins: true`, `prod-audit: true`, `maintenance-check: true`, `version-guard-paths: index.js bin`) | push to `main`, every `pull_request`, `workflow_dispatch` | — it *is* the gate | nothing | red on the PR or the commit. The only automation here whose failure appears where somebody is already looking. |
+| `.github/workflows/kit-pin-bump.yml` (`cron: '41 6 * * 1'`, Mondays ~06:41 UTC) + dispatch → vendor-cli's `kit-pin-bump.yml@main` | weekly | the one `@jfs/vendor-cli` pin, `package-lock.json`, the CLAUDE.md conventions block, the PR, the squash-merge | nothing, when it works | **nothing.** It has never delivered a bump on its own. See below. |
 | `.github/workflows/release.yml` (`workflow_run` on `Test` completed, `branches: [main]`) + dispatch → vendor-cli's `release.yml@main` | CI green on `main` | the `v<version>` tag and its GitHub release | nothing | **nothing** — but it is healthy here: run 27 tagged `v0.3.0` on 2026-09-11, and every version from `0.1.1` up is tagged (`0.1.0` predates the workflow). |
-| `.github/dependabot.yml` + `.github/workflows/dependabot-merge.yml` (`workflow_run` on `Test` completed) | npm weekly Tuesday, minor+patch grouped; `github-actions` monthly | every minor/patch bump, squash-merged on green | **every major**, and any PR body it cannot parse | a PR sits open. Nobody is told. Zero are open as of 2026-09-22; the last grouped bump (eslint 10.10.0, globals 17.12.0) landed as #25 on 2026-09-08. |
+| `.github/dependabot.yml` + `.github/workflows/dependabot-merge.yml` (`workflow_run` on `Test` completed) | npm weekly Tuesday, minor+patch grouped; `github-actions` monthly | every minor/patch bump, squash-merged on green | **every major**, and any PR body it cannot parse | a PR sits open. Nobody is told. Zero are open as of the 2026-09-22 sweep; the last grouped bump (eslint 10.10.0 → 10.11.0) landed as #29 on 2026-09-22. |
 
 There is **no deploy step and no `main`-branch publish** — this package is
 never installed at runtime by anything. It reaches an app only when that app
@@ -24,11 +25,11 @@ family's "Green CI is not delivered" section applies here with the delivery
 boundary in somebody else's repo: a fix merged and tagged here is still absent
 from all four consumers until each re-vendors.
 
-### The weekly bump has failed all five times, for two different reasons
+### The weekly bump has failed every run, for two different reasons
 
 `.github/workflows/kit-pin-bump.yml` was added on 2026-08-17 (#17) and fires on
-`41 6 * * 1`. It has run five times, all on `schedule`, and **all five failed**
-— verified against the Actions API on 2026-09-22:
+`41 6 * * 1`. It has run six times — five on `schedule`, one dispatched — and
+**all six failed**, verified against the Actions API on 2026-09-22:
 
 | Run | Date | Failed at step | Cause |
 | --- | --- | --- | --- |
@@ -37,6 +38,7 @@ from all four consumers until each re-vendors.
 | 3 | 2026-09-07 | 7 | same |
 | 4 | 2026-09-14 | 11, "Open a pull request if anything changed" | `GitHub Actions is not permitted to create or approve pull requests.` |
 | 5 | 2026-09-21 | 11 | same |
+| 6 | 2026-09-22 (`workflow_dispatch`) | the PR step | same |
 
 #23 fixed the first cause on 2026-09-08 (`vendor-sync-command: npm install`,
 `version-bump-command: ''`) and the failure moved one step later. Nobody saw
@@ -48,32 +50,36 @@ The second cause is **not a code bug and cannot be fixed in this repository.**
 It is the per-repo setting at *Settings → Actions → General → Workflow
 permissions* — <https://github.com/jsvolos63/fetch-kit/settings/actions> —
 which must allow GitHub Actions to create pull requests. pwa-kit and
-Netlify-kit have the identical failure; news-kit does not, which is why its pin
-is current and these three are not.
+Netlify-kit have the identical failure; news-kit does not. **It is still
+unflipped** after 2026-09-22, so next Monday's run will fail the same way.
 
-Everything before step 11 succeeded on runs 4 and 5, including step 10, "Run
-the repo's CI checks against the bumped tree". So a **validated** bump is
-sitting on the remote, undelivered:
+Everything before the PR step succeeds, including "Run the repo's CI checks
+against the bumped tree", so each run leaves a **validated** bump on the
+remote, undelivered:
 
 ```
 git ls-remote --heads origin 'refs/heads/auto/kit-pin-bump'
 ```
 
-`c95866e`, one commit ahead of `main`, dated 2026-09-14: `@jfs/vendor-cli`
-`276274b` (0.21.3) → `bf9b859` (0.21.6), touching only `package.json` and
-`package-lock.json`. Run 5's log reads `Branch 'auto/kit-pin-bump' is even with
-its remote and will not be updated` — each Monday re-derives the same bump and
-re-fails to deliver it.
+That is how the pin moved on 2026-09-22: run 6 rebuilt `auto/kit-pin-bump` on
+current `main` (`@jfs/vendor-cli` `276274b` 0.21.3 → `3e9e174` 0.21.7, touching
+only `package.json` and `package-lock.json`), a session opened #30 from it by
+hand, and it merged green as `9b3b8aa`. The branch is gone and the pin is at
+vendor-cli HEAD — until vendor-cli moves again, when the next bump strands the
+same way. **Until the setting is flipped, a stranded `auto/kit-pin-bump`
+branch is the expected output of every Monday**, and delivering it means
+opening its PR by hand.
 
-**How urgent is it?** Measured, not assumed. That bump also moves the
-generator's esbuild from 0.25.10 to 0.28.2, so it is a reprinter change and
-could in principle move bytes in the two consumers that vendor a `--pick`
-narrowed (and therefore esbuild-reprinted) copy. Generating all three shapes
-this kit's consumers actually use, under 0.21.3 + esbuild 0.25.10 and under
-0.21.6 + esbuild 0.28.2, gives **byte-identical output** in every case —
-full surface 30,567 bytes, John's News' three-export pick 8,159 bytes,
-market-monitor's six-export pick 8,222 bytes. So the stranded bump costs no
-consumer any bytes today. It matters as a *mechanism*: `bin/vendor.mjs`
+**How urgent is a stranded bump?** Measured, not assumed, twice. Each bump
+also moves the generator's esbuild, so it is a reprinter change and could in
+principle move bytes in the two consumers that vendor a `--pick`-narrowed (and
+therefore esbuild-reprinted) copy. Under 0.21.3 + esbuild 0.25.10, 0.21.6 +
+esbuild 0.28.2 and — after #30 — 0.21.7 + esbuild 0.28.2, generating the shapes
+this kit's consumers actually vendor gives **byte-identical output**: full
+surface 30,567 bytes (FlightCheck and Weather's committed copies), John's
+News' three-export pick 8,159 bytes, market-monitor's six-export pick 8,222
+bytes, each `cmp`-equal to the file in that repo. So no stranded bump has cost
+a consumer any bytes yet. It matters as a *mechanism*: `bin/vendor.mjs`
 resolves the CLI from inside this package, so whatever this pin says is the
 generator four apps run, and a pin that cannot move is a generator that cannot
 be fixed.
@@ -83,7 +89,7 @@ be fixed.
 There is no aggregate gate script in this repo — no `npm run check`, no
 `vendor:check`, no `version:check`, because a kit vendors nothing into itself
 and stamps no constants. `test.yml` passes three commands to family-ci and
-those three, run in this order, are the whole local gate:
+those three, run in this order after an install, are the local gate:
 
 ```
 node --check index.js
@@ -95,43 +101,55 @@ npm test
 | --- | --- |
 | `node --check index.js` | parses the one shipped module. Parsing, which is not analysis. |
 | `npm run lint` | `eslint .` over the flat config's two scopes — `index.js` with browser+node globals, and `bin/**/*.mjs` + `*.mjs` (which is every test file and the config itself). Nothing first-party is unlinted. |
-| `npm test` | `node --test test.mjs test-storage.mjs test-vendor.mjs` — 33 + 33 + 9 = **75 cases**, green on 2026-09-22 |
+| `npm test` | `node --test test.mjs test-storage.mjs test-vendor.mjs test-consumers.mjs` — 37 + 33 + 10 + 4 = **84 cases**, green on 2026-09-22 |
 
 Three properties of that chain matter more than the list:
 
-- **`npm test` is not runnable from a bare checkout.** `test-vendor.mjs`
-  spawns `bin/vendor.mjs`, which imports `@jfs/vendor-cli` — so with no
-  `node_modules` present, 6 of the 75 cases fail with `ERR_MODULE_NOT_FOUND`
-  (measured today). `npm install` first, and that install needs network: the
-  CLI is a GitHub git pin. The other two files are fully offline — no network,
-  no real timers, no DOM.
-- **Two of those 6 would fail *silently* in the other direction.** The
-  argument-validation cases assert only a non-zero exit, and a missing module
-  also exits non-zero. One of them, `'--pick outside global'`, no longer tests
-  what it is named: vendor-cli has allowed `--pick` with `--format esm` since
-  0.12.0, and the case passes today only because its pick name `a` is not an
-  export. Driving the real CLI confirms it — `--format esm --pick fetchJson`
-  writes a tree-shaken copy and exits 0. Rename the case or give it a stderr
-  match; do not read it as coverage of a rule that no longer exists.
-- **family-ci adds three checks no local command here can run**, all from a
-  checkout of vendor-cli's `main`: the kit-pin SHA pre-flight
-  (`verify-kit-pins: true`), the CLAUDE.md family-conventions check, and — as
-  of this commit — `maintenance-check: true`, which is both the family block
-  at the bottom of this file and a mechanical re-check of the repo-specific
-  half above it. "Green locally, red in CI" is usually one of these. The
-  `vendor:sync`/`vendor:check` command-parity check skips here, by design:
-  there are no such scripts.
+- **`npm test` is not runnable from a bare checkout.** `test-vendor.mjs` and
+  `test-consumers.mjs` spawn `bin/vendor.mjs`, which imports `@jfs/vendor-cli`
+  — so with no `node_modules` present, 11 of the 84 cases fail with
+  `ERR_MODULE_NOT_FOUND` (measured 2026-09-22). `npm install` (or `npm ci`)
+  first, and that install needs network: the CLI is a GitHub git pin.
+  `test.mjs` and `test-storage.mjs` are fully offline — no network, no DOM,
+  and no real backoff waits (a few timeout cases arm real 5 ms timers; the
+  default-timeout case uses node:test's mock timers).
+- **Every CLI-driving case fails loudly without the CLI.** Until 2026-09-22
+  two argument-validation cases asserted only a non-zero exit, which a missing
+  module also produces, and one of them — then named `'--pick outside global'`
+  — tested a rule vendor-cli retired in 0.12.0 and passed only because its
+  pick name was not an export. Both now match the refusal's stderr, and the
+  esm `--pick` path has a case of its own. Keep new cases that way: an
+  exit-code-only assertion on this CLI is a check that cannot tell "refused
+  for the right reason" from "never ran".
+- **family-ci adds four checks no npm script here runs**, all from a checkout
+  of vendor-cli's `main`: the kit-pin SHA pre-flight (`verify-kit-pins: true`),
+  the shipped-dependency audit (`prod-audit: true`), the CLAUDE.md
+  family-conventions check, and `maintenance-check: true`, which is both the
+  family block at the bottom of this file and a mechanical re-check of the
+  repo-specific half above it. "Green locally, red in CI" is usually one of
+  these. From a sibling vendor-cli checkout they are
+  `node <vendor-cli>/bin/check-kit-pins.mjs`,
+  `npm audit --omit=dev --audit-level=high`,
+  `node <vendor-cli>/bin/claude-md-sync.mjs --check`,
+  `node <vendor-cli>/bin/maintenance-sync.mjs --check` and
+  `node <vendor-cli>/tools/maintenance-doc-check.mjs`, run from this repo's
+  root. The `vendor:sync`/`vendor:check` command-parity check skips here, by
+  design: there are no such scripts.
 
-**`prod-audit: true` is not passed, and this kit's `dependencies` is not
-empty.** `@jfs/vendor-cli` sits there deliberately (see load-bearing, below),
-and it pulls esbuild, so `npm audit --omit=dev --audit-level=high` has real
-input here — it reports `found 0 vulnerabilities` today. Five app repos in the
-family pass the input; the four kits pass none. Turning it on is one line in
-`test.yml` and would arm a gate that currently only a session can think to run.
+**`prod-audit: true` is on as of 2026-09-22.** This kit's `dependencies` is
+not empty — `@jfs/vendor-cli` sits there deliberately (see load-bearing,
+below) and pulls esbuild, both of which a consumer installing this kit
+installs — so `npm audit --omit=dev --audit-level=high` has real input here.
+It reported `found 0 vulnerabilities` when it was turned on.
+
+The kit-pin bump's `check-command` runs the same three commands. It used to
+omit `npm run lint`, and that mattered more there than anywhere: a bump PR
+opened with the default token fires no `pull_request` CI, so the in-workflow
+check is the only gate its merge gets.
 
 ## This repo's cross-file invariants
 
-Four are mechanized.
+Six are mechanized.
 
 | Invariant | The halves | Gate |
 | --- | --- | --- |
@@ -139,18 +157,18 @@ Four are mechanized.
 | The `@jfs/vendor-cli` pin resolves on the remote | `package.json` `dependencies` | `verify-kit-pins: true`, before install, so a hand-edited SHA fails with a message instead of an opaque git-128 |
 | The derived export surface covers every top-level `export` | `index.js` ↔ what the generator emits | the generator fails **closed by construction**: an export form its derivation does not understand stops generation rather than silently vanishing. `test-vendor.mjs` then asserts the global and cjs surface maps equal the derived names exactly. |
 | `"sideEffects": false` is honest — no global is touched at import time | `package.json` ↔ `index.js` | implicit but real: `test-storage.mjs` imports `index.js` at module scope and installs its fake `localStorage` only inside each block, so a module-scope touch throws at import and takes the whole file down. There is no test *named* for this; if the import ever moves, the coverage goes with it. |
+| The export surface still carries every name a consumer uses | `index.js` ↔ what FlightCheck, John's News, Weather and market-monitor import off their vendored copies, and the two `--pick` lists | `test-consumers.mjs` (2026-09-22), against a **snapshot** of the four consumers taken by a family grep. It fails a removal or rename here, before the tag, instead of in a consumer's `vendor:sync` (narrowing consumers) or at link time in its browser (full-surface ones). It also generates both narrowing consumers' exact `--pick` shapes and **imports** them, so a generator that exits 0 and emits a copy that throws at load fails here. A stale row fails only in the safe direction; the file's header says how to refresh it. |
+| README's documented option defaults are what the code does | `README.md` ↔ `index.js` (`timeout` 12000, `retries` 2, `retryStatuses` `[429, 502, 503, 504]`, `retryBaseMs` 400, `jitter` 0.3, `respectRetryAfter` true) | the four `README defaults:` cases in `test.mjs` (2026-09-22). They read the numbers out of the README and drive `fetchWithRetry` / `fetchWithTimeout` with them — attempts, the exact backoff delays at full jitter, the retried status set over 400–599, Retry-After honoured, the timer armed — and a README the regexes cannot read fails rather than passes. A changed default reaches four apps' upstream call volume at their next re-vendor, which is why the number is documented at all. |
 
-Six are **prose only**. These are the monthly sweep's work and the
+Four are **prose only**. These are the monthly sweep's work and the
 mechanization backlog.
 
 | Pair | Where | What drift costs |
 | --- | --- | --- |
-| `parseRetryAfter` here ↔ `_retryAfterMs` in `@jfs/netlify-kit` | two repositories, each pointing at the other in a comment | The twins share the `/^\d+$/` delta-seconds test and the "every HTTP-date names a month, so no letter means no date" guard — without which V8 reads `1.5` as Jan 2001 and `-5` as May 2001, both past, both clamping to zero delay: the retry storm the header exists to prevent. Two deliberate divergences must survive any reconciliation: this one clamps inside the parser at `RETRY_AFTER_CAP_MS`, netlify-kit's caller clamps at its own `capMs`; and this one treats a numeric `0` as "retry now" rather than as an absent header (#22). **The most valuable mechanization on this list, and the hardest** — the halves are in different repos, so the gate would have to live in vendor-cli or be a hand-run differential. |
-| The export surface ↔ four consumers' `--pick` lists | `index.js` ↔ `package.json` in FlightCheck, John's News, Weather, market-monitor (twice each: `vendor:sync` and `vendor:check`) | Nothing in this repo knows what any consumer imports. Removing or renaming an export breaks their `vendor:sync` with an unknown-pick refusal — loud, but in their CI, on their schedule. v0.3.0 dropped three exports on the strength of a family-wide grep, which is the procedure: grep every repo, and remember that a hit inside a vendored copy is the definition, not a use. Verified 2026-09-22: all four pin `fe552a9` (= `main` = `v0.3.0`) and every picked name still exists. |
-| README's documented option defaults ↔ the constants | `README.md` ↔ `index.js` | `timeout` 12000, `retries` 2, `retryStatuses` `[429, 502, 503, 504]`, `retryBaseMs` 400, `jitter` 0.3 are written out in prose and agree today. A changed default reaches four apps' upstream call volume at their next re-vendor, which is why the number is documented at all. |
-| README's consumer recipes ↔ what consumers run | `README.md` ↔ their `package.json` | **Already drifted.** README shows ESM consumers the full-surface recipe and mentions `--pick` only under classic-script/CJS, but two of the four ESM consumers vendor a narrowed copy (`--pick fetchJson,fetchText,HttpError`; `--pick createCoalescer,fetchWithTimeout,safeSetItem,writeTtlJson,readTtlJson,readTtlJsonTimestamp`), which is the shape where a stale generator could move bytes. The doc omits the one case that has a blast radius. |
-| `engines.node: ">=18"` ↔ the Node anything actually runs | `package.json` ↔ family-ci's default | The four kits pass no `node-version-file` and carry no version file, so CI runs family-ci's default (22). Nothing tests the declared floor, and Node 18 has been end-of-life since April 2025. `index.js` needs nothing newer than 18 (`globalThis.fetch`, `AbortController`, `??`, one numeric separator), so this is a policy question, not a correctness one. |
-| CLAUDE.md's counts and case names ↔ the files | `CLAUDE.md` ↔ `test-storage.mjs`, `test-vendor.mjs` | Its "patch by line, not by text" warning says the `const ls = installLocalStorage(makeFakeLocalStorage());` line appears **sixteen** times. It appears 17 times verbatim, and there are 20 `const ls = installLocalStorage` bindings once the three multi-line calls are counted. The warning's substance is right and the number is not; a session that trusts the count will conclude it is reading the wrong file. |
+| `parseRetryAfter` here ↔ `_retryAfterMs` in `@jfs/netlify-kit` | two repositories, each pointing at the other in a comment | The twins share the `/^\d+$/` delta-seconds test and the "every HTTP-date names a month, so no letter means no date" guard — without which V8 reads `1.5` as Jan 2001 and `-5` as May 2001, both past, both clamping to zero delay: the retry storm the header exists to prevent. Two deliberate divergences must survive any reconciliation: this one clamps inside the parser at `RETRY_AFTER_CAP_MS`, netlify-kit's caller clamps at its own `capMs`; and this one treats a numeric `0` as "retry now" rather than as an absent header (#22). THIS half is pinned by `test.mjs`'s `parseRetryAfter: only RFC 9110 delta-seconds count as a number`; nothing pins that the two agree. **Still the most valuable mechanization on this list, and the hardest** — the halves are in different repos, neither vendors the other, so the gate would have to live in vendor-cli or be a hand-run differential. Re-checked by hand 2026-09-22: the digits test and the letter guard agree. |
+| README's consumer recipes ↔ what consumers run | `README.md` ↔ their `package.json` | Fixed 2026-09-22: README showed only the full-surface ESM recipe and never mentioned `--pick` at all, though two of the four consumers vendor a narrowed ESM copy — the shape a generator bump can move by a byte. It now documents the narrowed recipe with John's News' actual pick list. Still prose: a consumer changing its recipe changes nothing here. |
+| `engines.node: ">=18"` ↔ the Node anything actually runs | `package.json` ↔ family-ci's default | The four kits pass no `node-version-file` and carry no version file, so CI runs family-ci's default (22). Nothing tests the declared floor, and Node 18 has been end-of-life since April 2025. `index.js` needs nothing newer than 18 (`globalThis.fetch`, `AbortController`, `??`, one numeric separator), so this is a policy question, not a correctness one. The suite now uses node:test's mock timers in the `enable({ apis })` form, which needs Node ≥ 20.11 (20.4 through 20.10 took only an array); that binds the test runner, not the shipped module's floor. |
+| CLAUDE.md's counts and case names ↔ the files | `CLAUDE.md` ↔ `test-storage.mjs` | Fixed 2026-09-22: the "patch by line, not by text" warning said the `const ls = installLocalStorage(makeFakeLocalStorage());` line appears SIXTEEN times; it is 17 verbatim, 20 bindings counting the three multi-line calls. The paragraph now says both and tells a reader to trust `grep -c` over the prose — the warning is the point, not the number. |
 
 ## What nothing watches
 
@@ -159,10 +177,10 @@ all *downstream*, which makes the list short and the failure modes quiet.
 
 | Thing | How it fails | Watched by |
 | --- | --- | --- |
-| The `@jfs/vendor-cli` pin in `dependencies` | silently. It decides the generator four apps run, and it is two patch releases behind right now for a reason no page reports | `kit-pin-bump.yml`, which is broken here — so: **nothing** |
-| The four consumers' pins on this kit | silently. A consumer that stops bumping simply keeps an old copy; the tag here says nothing about what is deployed there | nothing in this repo. Reading their `package.json` is the only check. |
+| The `@jfs/vendor-cli` pin in `dependencies` | silently. It decides the generator four apps run. It is current as of 2026-09-22 (`3e9e174`, 0.21.7, delivered by hand as #30) and will fall behind the next time vendor-cli moves, for a reason no page reports | `kit-pin-bump.yml`, which does the work and cannot deliver it here — so: a session reading `auto/*`, or the family liveness monitor once its token exists |
+| The four consumers' pins on this kit | silently. A consumer that stops bumping simply keeps an old copy; the tag here says nothing about what is deployed there | nothing in this repo. Reading their `package.json` is the only check. (`test-consumers.mjs` watches what they IMPORT, not which commit they pin.) |
 | The browser contracts `index.js` assumes | silently, and only in a real browser: `globalThis.fetch`, `AbortController`, `localStorage` throwing rather than returning, and the **four** quota-error signals `isQuotaError` recognizes by name/code | `test-storage.mjs`'s hand-rolled fake, which models the contract this repo believes in. No consumer test and no CI here executes a real browser. |
-| The consolidation this kit exists to finish | silently. Art-Gallery-, JFS-Sports and BearsMockDraft still carry their own client fetch-with-timeout layers and vendor no fetch-kit; the kit reaches four of the repos whose copies it was extracted to replace | nothing. README and `index.js`'s header both say "eight repos carry a slightly different copy" in the present tense, which reads as eight consumers and is not one. |
+| The consolidation this kit exists to finish | silently. Art-Gallery-, JFS-Sports and BearsMockDraft still carry their own client fetch-with-timeout layers and vendor no fetch-kit; the kit reaches four of the repos whose copies it was extracted to replace | nothing. README said "eight repos carry a slightly different copy" in the present tense, which read as eight consumers; it now says eight grew one and names the four that vendor this kit. `index.js`'s header already said "carried" and lists them — it is not wrong, and editing it would be a shipped-surface change for a comment. |
 | GitHub's own deprecations in the shared workflows | loudly but harmlessly, and in a log nobody reads: every bump run ends `Node.js 20 is deprecated … peter-evans/create-pull-request@84ae59a2…` forced onto Node 24 | nothing here — that action is pinned in vendor-cli's reusable workflow, not in this repo. Fix it there. |
 | The per-repo *Actions can create pull requests* setting | silently, exactly as documented above. Repo settings are not in git, so no gate in any repo can see this one | nothing |
 
@@ -177,7 +195,7 @@ generator output and are never edited by hand.
 
 Direct exposure is as close to zero as a repo gets. No deploy, no hosting, no
 API key, no secret beyond the workflow token, and a suite that touches no
-network and no real timers. The only recurring spend is GitHub Actions minutes
+network once installed. The only recurring spend is GitHub Actions minutes
 — four workflows, one weekly cron, one weekly Dependabot PR, one monthly
 actions PR — and the bump runs die in 15–21 seconds, so even the broken one is
 cheap.
@@ -217,14 +235,15 @@ repos' generated files, which is the inverse arrangement and the reason its
 
 | Dependency / item | Current → target | Verdict | Why | The condition that would change the answer |
 | --- | --- | --- | --- | --- |
-| `@jfs/vendor-cli` | `276274b` (0.21.3) → `bf9b859` (0.21.6) | **TAKE — it is already validated and stranded** | The bump is on `auto/kit-pin-bump`, it passed this repo's checks in the workflow that produced it, and regeneration under it is byte-identical for all three shapes this kit's consumers vendor. Nothing about the change is in question. | Nothing about the dependency. The blocker is the repo's Actions setting; flip it and re-dispatch `.github/workflows/kit-pin-bump.yml`, or open the PR from the existing branch by hand. Note vendor-cli `main` has moved past `bf9b859`, so a re-dispatch will resolve a newer HEAD than the stranded branch names. |
+| Delivery of the weekly `@jfs/vendor-cli` bump | — | **STUCK on the owner** | Every run validates its bump and then fails at the PR step on `GitHub Actions is not permitted to create or approve pull requests` — a per-repo setting no commit can change. The 2026-09-22 bump (0.21.3 → 0.21.7) was delivered by a session opening #30 by hand from the stranded branch; it merged green and was byte-neutral for all four consumers. | The owner allows Actions to create PRs at <https://github.com/jsvolos63/fetch-kit/settings/actions>. Until then, each Monday: `git ls-remote --heads origin 'refs/heads/auto/*'`, and open the PR by hand. |
 | `engines.node` | `">=18"` → `">=20"` or `">=22"` | **HOLD, but decide it deliberately once** | Node 18 is EOL (April 2025) and nothing tests the floor, but `index.js` genuinely runs on 18 and the declared floor is a promise to *consumers*, whose own floors differ. Raising it is a family-wide runtime decision, not this repo's. | The family settles a floor (the quarterly "runtime floor" item in the block below), or `index.js` needs an API newer than 18 — at which point the floor moves in the same commit. |
-| `peter-evans/create-pull-request@84ae59a2…` targeting Node 20 | — | **not this repo's to fix** | It is pinned by SHA inside vendor-cli's reusable `kit-pin-bump.yml`; every bump run in the family warns. | GitHub removes the Node 20 forcing, or vendor-cli bumps the pin. File it there. |
-| `test-vendor.mjs`'s `'--pick outside global'` case | — | **clean follow-up, unowned** | It asserts a rule vendor-cli retired in 0.12.0 and passes for an unrelated reason. Harmless today, misleading on the day someone reads it as coverage. | Anyone touching that file. One line: add a stderr match, or rename the case to what it tests. |
+| `peter-evans/create-pull-request@84ae59a2…` targeting Node 20 | — | **not this repo's to fix** | It is pinned by SHA inside vendor-cli's reusable `kit-pin-bump.yml`; every bump run in the family warns (run 6 on 2026-09-22 still did). | GitHub removes the Node 20 forcing, or vendor-cli bumps the pin. File it there. |
+| `test-vendor.mjs` parity with pwa-kit's and Netlify-kit's copies | theirs → this one | **not this repo's to fix** | The three were byte-identical until 2026-09-22, when this copy gained stderr-matched refusals and an esm `--pick` case. Theirs still carry `'--pick outside global'`, which passes on an unknown pick name — and with no CLI installed at all. The changes are kit-generic (they derive from `pkg.name` and the kit's own exports): this file dropped into a checkout of either kit passes 10/10, checked 2026-09-22. | Each kit's own sweep copies this file across and runs its suite; the three are identical again. Until then, a fix to this file belongs in all three. |
+| `index.js`'s header prose | — | **HOLD** | Nothing in it is false today (it says eight repos *carried* a copy), but any edit to `index.js` is a shipped-surface change: it needs a version bump, and it moves the bytes of both full-surface consumers' verbatim copies, so each must re-vendor and bump its own app version for a comment. | A real code change to `index.js` — fold prose fixes into that commit. |
 
-No major dependency bump is outstanding: `eslint` 10.10.0, `@eslint/js` 10.0.1
-and `globals` 17.12.0 are the whole devDependency set and all are current, with
-zero open PRs on 2026-09-22.
+No major dependency bump is outstanding: `npm outdated` is empty on
+2026-09-22 (`eslint` 10.11.0, `@eslint/js` 10.0.1, `globals` 17.12.0, and the
+`@jfs/vendor-cli` pin at vendor-cli HEAD), and there are zero open PRs.
 
 ## What looks like cruft and is load-bearing
 
@@ -261,45 +280,64 @@ zero open PRs on 2026-09-22.
   legitimate fields of those names silently. Both layers carry the same
   one-key list deliberately: a second pass deleting more would put the data
   loss back one layer down.
-- **The 20 `const ls = installLocalStorage(...)` lines in
-  `test-storage.mjs`.** They look like a find-and-replace waiting to happen.
-  `ls` is used in all of them; patch by line, not by text.
+- **The 20 `const ls = installLocalStorage(...)` bindings in
+  `test-storage.mjs`** (17 of them the identical one-line form). They look
+  like a find-and-replace waiting to happen. `ls` is used in all of them;
+  patch by line, not by text.
 - **`no-regex-spaces: 'off'`** in `eslint.config.mjs`. The vendor suite matches
   a known two-space indent in generated output, where the literal reads better
   than `{2}`. The disabled list is one entry long in this kit; a second should
   feel like a decision.
 - **`test-vendor.mjs` deriving its expectations from `index.js`'s own
-  exports** rather than naming them. The same file ships in every kit; a
-  hard-coded list would need editing on every API change, which is how it would
-  come to be wrong.
+  exports** rather than naming them. The same file ships in pwa-kit and
+  Netlify-kit (news-kit keeps a longer variant at `test/vendor.test.js`); a hard-coded list
+  would need editing on every API change, which is how it would come to be
+  wrong. As of 2026-09-22 this copy is ahead of the other two — see the
+  deferred table — so it is "the same file" by intent, not by bytes.
+- **`test-consumers.mjs`'s hand-written `CONSUMERS` table** — the one place
+  this repo *does* keep a hard-coded list of names, and on purpose. It is not
+  a list of what the kit offers (that stays derived) but a snapshot of what
+  four other repos use, which nothing here could derive. Deleting a name from
+  it to make a removal pass is exactly the change the test exists to stop:
+  move the consumer first, then the row.
 
 ## Diagnosis — it is broken and I do not know why
 
 Fastest-resolving first.
 
-1. **`npm test` fails on 6 cases with `ERR_MODULE_NOT_FOUND`.** There is no
+1. **`npm test` fails on 11 cases with `ERR_MODULE_NOT_FOUND`** (every case in
+   `test-vendor.mjs` and `test-consumers.mjs` that spawns the CLI). There is no
    `node_modules`. Run `npm install` (needs network — the CLI is a git pin) and
    re-run. Nothing is wrong with the kit.
-2. **CI red, the three local commands green.** Almost always one of the three
-   checks family-ci adds and no local script can run: the kit-pin SHA
-   pre-flight, the CLAUDE.md conventions block, or this file's family block and
-   its doc-check. Read the failing step's name. The conventions and maintenance
+2. **CI red, the three local commands green.** Almost always one of the four
+   checks family-ci adds and no npm script here runs (see "The gate" for how to
+   run each by hand): the kit-pin SHA pre-flight, the shipped-dependency audit,
+   the CLAUDE.md conventions block, or this file's family block and its
+   doc-check. Read the failing step's name. The conventions and maintenance
    checks run against vendor-cli `main`, so they can go red with no commit here
-   — that is the designed behavior, and re-syncing is the fix.
-3. **A consumer's `vendor:sync` refuses with an unknown-pick name.** An export
-   was renamed or removed here. Their pick list is in their `package.json`,
-   twice (`vendor:sync` and `vendor:check`); grep the four consumers before
-   changing the surface, and remember a hit inside a vendored copy is the
-   definition, not a use.
+   — that is the designed behavior, and re-syncing is the fix. An audit
+   failure is an advisory in `@jfs/vendor-cli`'s tree (esbuild, today its only
+   dependency): fix it at vendor-cli and let the pin follow, and use an
+   `overrides` entry here only if that cannot happen.
+3. **`test-consumers.mjs` fails, or a consumer's `vendor:sync` refuses with an
+   unknown-pick name.** An export was renamed or removed here. The test's
+   message names the consumer and the name. Their pick list is in their
+   `package.json`, twice (`vendor:sync` and `vendor:check`); grep the four
+   consumers before changing the surface, and remember a hit inside a vendored
+   copy is the definition, not a use. A full-surface consumer (FlightCheck,
+   Weather) never refuses anything — it regenerates cleanly and then fails to
+   link in the browser, so the test is the only early warning for those two.
 4. **A consumer's `vendor:check` shows byte drift with no change here.** The
    generator moved, not the kit. Compare the `@jfs/vendor-cli` pin in *this*
    package.json against what the consumer resolved, and note that only
    `--pick`-narrowed copies are reprinted by esbuild — a full surface is
    verbatim source and never shaken, so it cannot drift on a CLI bump.
-5. **Nothing has bumped in weeks.** That is the expected state, not a symptom:
+5. **Nothing has bumped in weeks.** Expected until the owner flips the
+   Actions setting, not a symptom:
    <https://github.com/jsvolos63/fetch-kit/actions/workflows/kit-pin-bump.yml>,
    then `git ls-remote --heads origin 'refs/heads/auto/*'` for the stranded
-   branch. Check the *run*, not whether `main` is green.
+   branch, and open its PR by hand. Check the *run*, not whether `main` is
+   green.
 6. **A version shipped untagged.** `git ls-remote --tags origin` against
    `package.json`'s `version`. A bot-merged PR pushes with the default
    `GITHUB_TOKEN`, which creates no workflow runs, so `release.yml`'s
@@ -312,6 +350,7 @@ Fastest-resolving first.
 
 | Date | Cadence | Outcome |
 | --- | --- | --- |
+| 2026-09-22 | Weekly + monthly sweep | **Weekly:** last scheduled `kit-pin-bump.yml` run (5, 09-21) failed at the PR step; run 6 (dispatched 09-22) failed the same way — the owner-only *Actions may create PRs* setting is still off. Its validated bump (vendor-cli `276274b` 0.21.3 → `3e9e174` 0.21.7) was opened by hand as #30 and merged green (`9b3b8aa`); no `auto/*` branch remains, zero open PRs, no bot PR aged or red. Test green on `main`; Release run 29 green (no new version to tag; `v0.3.0` = `package.json`). Pins: this kit's vendor-cli pin = vendor-cli HEAD; all four consumers pin `fe552a9` = `v0.3.0`, the last `index.js` change, so delivery is current. **Baseline gate** (npm ci, `node --check`, eslint, 75/75 tests, kit-pin pre-flight, claude-md and maintenance sync, doc-check, prod audit): all green before any change. **Fixed:** (1) `test-vendor.mjs`'s `'--pick outside global'` case now matches the unknown-pick stderr, and `--name is required and validated` likewise — both passed with no CLI installed; plus a new esm `--pick` case. (2) New `test-consumers.mjs`: a snapshot of what the four consumers import/pick, checked against the export surface, with both narrowing consumers' exact shapes generated and imported. (3) Four `README defaults:` cases in `test.mjs` drive the documented defaults (mutation-tested: each of retries, timeout, jitter, status set and an unreadable README fails). (4) `prod-audit: true` on in `test.yml` (0 vulnerabilities). (5) `kit-pin-bump.yml`'s `check-command` gains `npm run lint`. (6) CLAUDE.md's SIXTEEN → 17 verbatim / 20 bindings. (7) README: the ESM `--pick` recipe (it mentioned `--pick` nowhere, not "only under classic-script/CJS" as this file claimed), the present-tense "eight repos carry", and the test command. (8) This file: the stranded-branch and pin-lag text, test counts (84; 11 need the CLI), the invariants tables (six mechanized, four prose), the deferred table; and "no real timers" here, in README and in `test.mjs`'s header (a few timeout cases arm real 5 ms timers). **Majors:** none outstanding; `npm outdated` empty. **Advisories:** 0. **Upstreams:** none owned. **Delivery:** all four consumers' committed copies regenerate `cmp`-identical under the new pin, so #30 moved no consumer bytes. **Open:** the Actions setting (owner); the `parseRetryAfter` ↔ netlify-kit twin (cross-repo, re-checked by hand: agree); `engines.node` (family decision); pwa-kit's and Netlify-kit's `test-vendor.mjs`, byte-identical to this one before (1) and still carrying the stale case (their sweeps; this file passes 10/10 in both). **Independent review** of this row's diff re-ran every gate and re-derived its numbers (84 cases, 11 without the CLI, 17/20 bindings, 30,567 / 8,159 / 8,222 bytes `cmp`-equal in all four consumers, six bump runs all failed); it added the sibling-copy row to the deferred table and corrected the mock-timers floor to Node 20.11. No version bump: nothing under `index.js` or `bin/` changed. |
 | 2026-09-22 | Maintenance plan (first) | Wrote this file's repo-specific half and opted `test.yml` into `maintenance-check: true`. Six things it turned up. (1) **The weekly bump has failed all five of its runs**, not four or five weeks' worth of one cause but two in sequence — runs 1–3 at step 7 on the `vendor:sync` default, runs 4–5 at step 11 on `GitHub Actions is not permitted to create or approve pull requests` — so #23's correct fix bought two more silent weeks. (2) The stranded bump is **byte-neutral**: generating the full surface and both consumers' `--pick` lists under 0.21.3 + esbuild 0.25.10 and 0.21.6 + esbuild 0.28.2 gives identical bytes in all three shapes, so it is a broken mechanism rather than a shipped defect. (3) **CLAUDE.md's "SIXTEEN times" is wrong** — 17 verbatim, 20 bindings; the warning it decorates is right. (4) `test-vendor.mjs`'s `'--pick outside global'` case tests a rule vendor-cli dropped in 0.12.0 and passes only because its pick name is not an export; confirmed by driving the real CLI. (5) README documents `--pick` only for classic-script and CJS consumers, but **two of the four ESM consumers use it** — precisely the copies a generator bump can move. (6) `prod-audit` is not passed although `dependencies` is non-empty and pulls esbuild; the audit reports clean today. Verified green: `node --check`, `eslint .`, 75/75 tests, the CLAUDE.md conventions block in sync, `v0.3.0` tagged and released, zero open PRs, and all four consumers pinned at `fe552a9` with every picked export still present. |
 
 <!-- maintenance-check:allow
