@@ -31,7 +31,7 @@
     "kit-pins:bump": "jfs-bump-kit-pins"
   },
   "dependencies": {
-    "@jfs/vendor-cli": "github:jsvolos63/vendor-cli#bef0be8ddcf8ae5fb735a1eb7cbbf34871a73cef"
+    "@jfs/vendor-cli": "github:jsvolos63/vendor-cli#692b3878211bb9eee8a08cbeea76f431a716f87c"
   },
   "keywords": [
     "fetch",
