@@ -16,7 +16,7 @@ name: Kit pin bump
 # exactly those paths and would object).
 on:
   schedule:
-    - cron: '41 6 * * 1'   # Mondays ~06:41 UTC, with the rest of the family
+    - cron: '41 6 2 * *'   # the 2nd of each month, ~06:41 UTC, with the rest of the family
   workflow_dispatch:
 
 permissions:
