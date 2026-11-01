@@ -4,6 +4,12 @@
 # open for a review. The @jfs/* git pins are the weekly kit-pin bump's, not
 # Dependabot's. GitHub Actions monthly, so SHA-pinned third-party actions
 # pick up fixes.
+#
+# cooldown (the family audit's FAM-4, same shape as news-kit): a version
+# update is proposed only once the release is 7 days old, so a hijacked
+# release gets a week to be caught and yanked before the merge workflow can
+# land it. Version updates only: security updates still open at once.
+# `default-days` is the one cooldown key both ecosystems below support.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -11,6 +17,8 @@ updates:
     schedule:
       interval: weekly
       day: tuesday
+    cooldown:
+      default-days: 7
     groups:
       minor-and-patch:
         update-types: [minor, patch]
@@ -19,3 +27,5 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
