@@ -20,8 +20,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write        # the caller must grant both — a called
+  contents: write        # the caller must grant all three — a called
   pull-requests: write   # workflow can't elevate its token
+  actions: write         # dispatch the repo's CI on the bump branch
 
 jobs:
   bump:
