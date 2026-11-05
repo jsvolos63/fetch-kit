@@ -20,3 +20,10 @@ permissions:
 jobs:
   merge:
     uses: jsvolos63/vendor-cli/.github/workflows/dependabot-merge.yml@main
+    # The family GitHub App's two secrets, by name (never `secrets: inherit`).
+    # With both, the merge is made as the App, the one identity the branch
+    # protection lets merge; without them the default token's merge is
+    # refused (vendor-cli's MAINTENANCE.md, FAM-1 (b)).
+    secrets:
+      FAMILY_BOT_APP_ID: ${{ secrets.FAMILY_BOT_APP_ID }}
+      FAMILY_BOT_PRIVATE_KEY: ${{ secrets.FAMILY_BOT_PRIVATE_KEY }}
