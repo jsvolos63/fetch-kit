@@ -27,6 +27,14 @@ permissions:
 jobs:
   bump:
     uses: jsvolos63/vendor-cli/.github/workflows/kit-pin-bump.yml@main
+    # The family GitHub App's two secrets, by name (never `secrets: inherit`).
+    # With both, the bump PR is opened and merged as the App, the one identity
+    # the branch protection lets merge; without them the default token opens
+    # it and its merge is refused (vendor-cli's MAINTENANCE.md, FAM-1 (b)).
+    # The reusable workflow hands them to its write job alone.
+    secrets:
+      FAMILY_BOT_APP_ID: ${{ secrets.FAMILY_BOT_APP_ID }}
+      FAMILY_BOT_PRIVATE_KEY: ${{ secrets.FAMILY_BOT_PRIVATE_KEY }}
     with:
       # A kit has no vendor:sync and no version:stamp: its semver tracks
       # index.js + bin, which a CLI pin bump never touches. Left at the
