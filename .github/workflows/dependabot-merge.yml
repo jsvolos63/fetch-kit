@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   merge:
-    uses: jsvolos63/vendor-cli/.github/workflows/dependabot-merge.yml@main
+    uses: jsvolos63/vendor-cli/.github/workflows/dependabot-merge.yml@df716ce2579aadc773215f87a184f2636283088d # v0.23.0
     # The family GitHub App's two secrets, by name (never `secrets: inherit`).
     # With both, the merge is made as the App, the one identity the branch
     # protection lets merge; without them the default token's merge is
