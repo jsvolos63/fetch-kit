@@ -1,7 +1,7 @@
 {
   "name": "@jfs/fetch-kit",
-  "version": "0.3.0",
-  "description": "Shared, dependency-free browser fetch and storage primitives for the JFS family of buildless static PWAs — the client twin of netlify-kit's fetchWithRetry (AbortController timeout, exponential backoff with jitter, typed HttpError/TimeoutError, in-flight request coalescing, Retry-After parsing) plus the localStorage primitives absorbed from the retired @jfs/cache-kit (safe wrappers that never throw, JSON snapshots with TTL, quota-aware multi-key saves).",
+  "version": "0.4.0",
+  "description": "Shared, dependency-free browser fetch and storage primitives for the JFS family of buildless static PWAs — the client twin of netlify-kit's fetchWithRetry (AbortController timeout, exponential backoff with jitter, typed HttpError/TimeoutError/ResponseTooLargeError, byte-capped and deadline-bound body reads, in-flight request coalescing, Retry-After parsing) plus the localStorage primitives absorbed from the retired @jfs/cache-kit (safe wrappers that never throw, JSON snapshots with TTL, quota-aware multi-key saves).",
   "type": "module",
   "license": "MIT",
   "author": "jsvolos63",
@@ -50,5 +50,8 @@
     "@eslint/js": "^10.0.1",
     "eslint": "^10.13.0",
     "globals": "^17.13.0"
+  },
+  "overrides": {
+    "minimatch": "^11.0.5"
   }
 }

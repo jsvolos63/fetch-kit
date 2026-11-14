@@ -22,7 +22,9 @@
 //                                   transient classification + Retry-After.
 //                                   Resolves an ok Response or throws a typed
 //                                   HttpError / TimeoutError.
-//   fetchJson / fetchText         — fetchWithRetry + parse.
+//   fetchJson / fetchText         — fetchWithRetry + a capped, deadline-bound
+//                                   body read + parse (v0.4.0, FAM-8).
+//   readTextCapped(res, opts)     — that body read on its own.
 //   createCoalescer()             — dedupe concurrent identical requests onto
 //                                   one in-flight promise (keyed by any string).
 //   parseRetryAfter(header)       — delta-seconds | HTTP-date → ms.
@@ -82,6 +84,21 @@ export class TimeoutError extends Error {
     this.name = 'TimeoutError';
     this.url = url;
     this.timeoutMs = timeoutMs;
+  }
+}
+
+/** Thrown when a response body passes the caller's byte cap (v0.4.0). The
+ *  read stops and the stream is cancelled the moment the cap is crossed, so
+ *  no more than one chunk past the cap is ever held. Tagged `.tooLarge`, the
+ *  same tag @jfs/netlify-kit's readTextCapped throws. Never retried by
+ *  default: the same URL would send the same body. */
+export class ResponseTooLargeError extends Error {
+  constructor(url, maxBytes) {
+    super(`Response from ${url} is larger than ${maxBytes} bytes`);
+    this.name = 'ResponseTooLargeError';
+    this.url = url;
+    this.maxBytes = maxBytes;
+    this.tooLarge = true;
   }
 }
 
@@ -201,6 +218,39 @@ const DEFAULT_JITTER = 0.3;
 // can't balloon the error object.
 const MAX_ERROR_BODY = 2048;
 
+/** At most `maxChars` characters of an error body, reading no more than four
+ *  bytes per character before cancelling the stream (v0.4.0). It used to call
+ *  res.text() and slice: the whole error page was buffered, however large, to
+ *  keep 2 KB of it — and with no deadline once the headers had arrived. */
+async function _readSnippet(res, maxChars, timeout, signal) {
+  if (!res.body || typeof res.body.getReader !== 'function') {
+    return typeof res.text === 'function' ? (await res.text()).slice(0, maxChars) : null;
+  }
+  const limit = maxChars * 4;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let out = '';
+  let received = 0;
+  let timer = null;
+  const stop = new Promise((_, reject) => {
+    if (Number.isFinite(timeout) && timeout > 0) timer = setTimeout(() => reject(new Error('snippet timeout')), timeout);
+    if (signal?.aborted) reject(_abortError());
+  });
+  stop.catch(() => {});
+  try {
+    while (received < limit) {
+      const { done, value } = await Promise.race([reader.read(), stop]);
+      if (done) break;
+      received += value.byteLength;
+      out += decoder.decode(value, { stream: true });
+    }
+    return out.slice(0, maxChars);
+  } finally {
+    if (timer) clearTimeout(timer);
+    try { await reader.cancel(); } catch { /* already closed */ }
+  }
+}
+
 /** Default transient classification: a listed status (429/502/503/504) or a
  *  bare network TypeError is worth retrying; a TimeoutError, an AbortError, and
  *  every other 4xx is not. Overridable via the `retryOn` option. */
@@ -279,7 +329,7 @@ export async function fetchWithRetry(url, opts = {}) {
       // also releases the connection instead of leaving it dangling until GC.
       let body = null;
       try {
-        if (typeof res.text === 'function') body = (await res.text()).slice(0, MAX_ERROR_BODY);
+        body = await _readSnippet(res, MAX_ERROR_BODY, timeout, signal);
       } catch {
         // A body that can't be read (already consumed, network cut mid-stream)
         // must not mask the real HTTP status — leave body null.
@@ -301,17 +351,114 @@ export async function fetchWithRetry(url, opts = {}) {
   throw lastError;
 }
 
-/** fetchWithRetry + JSON parse. Throws HttpError on non-ok (before parsing) and
- *  the parse error on malformed JSON. */
-export async function fetchJson(url, opts = {}) {
-  const res = await fetchWithRetry(url, opts);
-  return res.json();
+// ─────────────────────── capped body reads (v0.4.0) ───────────────────────
+//
+// FAM-8. `res.text()` / `res.json()` buffer whatever the server sends, and a
+// chunked answer carries no content-length to check first. And the request
+// timeout above ends when fetch RESOLVES — at the headers — so a body that
+// stalls after them was bounded by nothing at all: FlightCheck's api.js had
+// to race its own body read against a deadline to stop one stalled poll
+// pinning every later poll of that URL. readTextCapped is that read done once:
+// streamed, counted, stopped at `maxBytes`, bounded by its own `timeout`, and
+// abandoned on the caller's `signal`.
+
+/** Default byte cap for fetchJson / fetchText / readTextCapped: 5 MB, the
+ *  same figure as @jfs/netlify-kit's MAX_RESPONSE_BYTES. */
+export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+
+function _checkMaxBytes(maxBytes) {
+  if (maxBytes === Infinity) return maxBytes; // an explicit, visible opt-out
+  if (typeof maxBytes !== 'number' || !Number.isFinite(maxBytes) || maxBytes < 0) {
+    throw new TypeError(`maxBytes must be a non-negative number or Infinity (got ${String(maxBytes)})`);
+  }
+  return maxBytes;
 }
 
-/** fetchWithRetry + text parse. */
+function _abortError() {
+  try {
+    return new DOMException('The operation was aborted.', 'AbortError');
+  } catch {
+    const e = new Error('The operation was aborted.');
+    e.name = 'AbortError';
+    return e;
+  }
+}
+
+/** Read a Response body as UTF-8 text, refusing to hold more than `maxBytes`
+ *  and to wait more than `timeout` ms for the whole body.
+ *
+ *  Options: `{ maxBytes = MAX_RESPONSE_BYTES, timeout = 12000, signal, url }`.
+ *  `maxBytes: Infinity` opts out of the cap; `timeout` ≤ 0 or non-finite arms
+ *  no timer (as in fetchWithTimeout). Throws ResponseTooLargeError past the
+ *  cap, TimeoutError past the deadline, the AbortError when `signal` fires;
+ *  in every case the stream is cancelled first. `url` only labels errors. */
+export async function readTextCapped(res, { maxBytes = MAX_RESPONSE_BYTES, timeout = DEFAULT_TIMEOUT_MS, signal, url = res && res.url } = {}) {
+  const cap = _checkMaxBytes(maxBytes);
+  const len = Number(res.headers?.get?.('content-length'));
+  if (Number.isFinite(len) && len > cap) {
+    try { await res.body?.cancel?.(); } catch { /* releasing the connection is best-effort */ }
+    throw new ResponseTooLargeError(url, cap);
+  }
+  if (signal?.aborted) throw _abortError();
+
+  // No streaming body (a polyfill or a test double): read whole, then judge.
+  if (!res.body || typeof res.body.getReader !== 'function') {
+    const text = await res.text();
+    if (new TextEncoder().encode(text).byteLength > cap) throw new ResponseTooLargeError(url, cap);
+    return text;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let out = '';
+  let received = 0;
+  let timer = null;
+  let onAbort = null;
+  // One promise that rejects on the deadline or the caller's abort; each
+  // chunk read races it, and whichever wins first decides.
+  const stop = new Promise((_, reject) => {
+    if (Number.isFinite(timeout) && timeout > 0) {
+      timer = setTimeout(() => reject(new TimeoutError(url, timeout)), timeout);
+    }
+    if (signal) {
+      onAbort = () => reject(_abortError());
+      signal.addEventListener('abort', onAbort);
+    }
+  });
+  stop.catch(() => {}); // only ever observed through the race below
+  try {
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), stop]);
+      if (done) break;
+      received += value.byteLength;
+      if (received > cap) throw new ResponseTooLargeError(url, cap);
+      out += decoder.decode(value, { stream: true });
+    }
+    return out + decoder.decode();
+  } catch (err) {
+    try { await reader.cancel(); } catch { /* already closing */ }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+/** fetchWithRetry + a capped body read + JSON parse. Throws HttpError on
+ *  non-ok (before reading), ResponseTooLargeError past `opts.maxBytes`
+ *  (default MAX_RESPONSE_BYTES), TimeoutError when the body takes longer than
+ *  `opts.timeout` to arrive (its own deadline, started at the headers), and
+ *  the parse error on malformed JSON. */
+export async function fetchJson(url, opts = {}) {
+  return JSON.parse(await fetchText(url, opts));
+}
+
+/** fetchWithRetry + a capped, deadline-bound body read (see fetchJson). */
 export async function fetchText(url, opts = {}) {
-  const res = await fetchWithRetry(url, opts);
-  return res.text();
+  const { maxBytes = MAX_RESPONSE_BYTES, ...rest } = opts;
+  _checkMaxBytes(maxBytes);
+  const res = await fetchWithRetry(url, rest);
+  return readTextCapped(res, { maxBytes, timeout: rest.timeout ?? DEFAULT_TIMEOUT_MS, signal: rest.signal, url });
 }
 
 // ───────────────────────── coalescer ─────────────────────────

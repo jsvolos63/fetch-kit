@@ -19,13 +19,14 @@ on:
     - cron: '41 6 2 * *'   # the 2nd of each month, ~06:41 UTC, with the rest of the family
   workflow_dispatch:
 
-permissions:
-  contents: write        # the caller must grant all three — a called
-  pull-requests: write   # workflow can't elevate its token
-  actions: write         # dispatch the repo's CI on the bump branch
+permissions: {}           # nothing by default; the job asks for its own
 
 jobs:
   bump:
+    permissions:
+      contents: write        # the caller must grant all three — a called
+      pull-requests: write   # workflow can't elevate its token
+      actions: write         # dispatch the repo's CI on the bump branch
     uses: jsvolos63/vendor-cli/.github/workflows/kit-pin-bump.yml@df716ce2579aadc773215f87a184f2636283088d # v0.23.0
     # The family GitHub App's two secrets, by name (never `secrets: inherit`).
     # With both, the bump PR is opened and merged as the App, the one identity
@@ -43,7 +44,7 @@ jobs:
       # the day it was added, and nothing here noticed. Re-install so
       # package-lock.json follows the bumped pin (CI runs `npm ci`), and
       # skip the app-version bump.
-      vendor-sync-command: npm install
+      vendor-sync-command: npm install --ignore-scripts
       version-bump-command: ''
       # The same checks test.yml runs — all three, lint included: a bump PR
       # opened with the default token fires no pull_request CI, so this step

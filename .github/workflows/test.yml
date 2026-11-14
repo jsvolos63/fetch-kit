@@ -12,11 +12,13 @@ on:
     branches: [main]
   pull_request:
 
-permissions:
-  contents: read
+# Deny by default; the job asks for what its runs were measured using.
+permissions: {}
 
 jobs:
   family-ci:
+    permissions:
+      contents: read
     uses: jsvolos63/vendor-cli/.github/workflows/family-ci.yml@df716ce2579aadc773215f87a184f2636283088d # v0.23.0
     with:
       verify-kit-pins: true
@@ -25,6 +27,11 @@ jobs:
       # consumer installing this kit installs both. Gate high/critical
       # advisories in that shipped tree; dev-only advisories never gate.
       prod-audit: true
+      # The whole tree at high/critical, dev tooling included, and the
+      # registry's signatures and attestations on every installed package
+      # (vendor-cli 0.23.0).
+      audit: true
+      audit-signatures: true
       maintenance-check: true
       run: |
         node --check index.js

@@ -17,6 +17,9 @@ import {
   fetchJson,
   fetchText,
   createCoalescer,
+  readTextCapped,
+  ResponseTooLargeError,
+  MAX_RESPONSE_BYTES,
 } from './index.js';
 
 // ───────────────────────── fakes ─────────────────────────
@@ -526,4 +529,88 @@ test('README defaults: fetchWithTimeout arms the documented timeout', async (t) 
   assert.equal(settled, false, 'must not abort before the documented timeout');
   t.mock.timers.tick(1);
   await assert.rejects(pending, (err) => err instanceof TimeoutError && err.timeoutMs === doc.timeout);
+});
+
+
+// ═══════════════ v0.4.0: capped, deadline-bound body reads (FAM-8) ═══════════════
+//
+// Each test below fails on v0.3.0: fetchJson/fetchText read the body with
+// res.json()/res.text() — no cap, and no deadline once the headers were in —
+// and the HttpError snippet buffered the whole error page.
+
+// A real Response whose body is `total` bytes in 64 KiB chunks with no
+// content-length; `pulled()` reports how many bytes the reader asked for.
+function streamed(total, { status = 200, fill = 0x61, stallAfter = Infinity } = {}) {
+  let sent = 0;
+  const body = new ReadableStream({
+    pull(c) {
+      if (sent >= stallAfter) return new Promise(() => {}); // never resolves: a stalled body
+      if (sent >= total) { c.close(); return undefined; }
+      const n = Math.min(65536, total - sent);
+      sent += n;
+      c.enqueue(new Uint8Array(n).fill(fill));
+      return undefined;
+    },
+  });
+  return { res: new Response(body, { status }), pulled: () => sent };
+}
+const once = (res) => async () => res;
+// Fail rather than hang when the code under test never settles.
+const within = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`${what}: still pending after ${ms} ms`)), ms))]);
+
+test('fetchText stops a chunked body at the default 5 MB cap', async () => {
+  const { res, pulled } = streamed(MAX_RESPONSE_BYTES + 4 * 65536);
+  await assert.rejects(fetchText('https://big', { fetchImpl: once(res), retries: 0 }),
+    (e) => e instanceof ResponseTooLargeError && e.tooLarge === true && e.maxBytes === MAX_RESPONSE_BYTES);
+  assert.ok(pulled() <= MAX_RESPONSE_BYTES + 2 * 65536, `pulled ${pulled()} bytes past a ${MAX_RESPONSE_BYTES}-byte cap`);
+});
+
+test('fetchJson honours maxBytes, refuses an advertised oversize before reading, and is not retried', async () => {
+  const calls = [];
+  const impl = async (u) => { calls.push(u); return new Response('{"a":"' + 'x'.repeat(100) + '"}'); };
+  await assert.rejects(fetchJson('https://j', { fetchImpl: impl, maxBytes: 50 }), ResponseTooLargeError);
+  assert.equal(calls.length, 1, 'a too-large body is not a transient failure');
+  assert.deepEqual(await fetchJson('https://j', { fetchImpl: async () => new Response('{"a":1}'), maxBytes: 7 }), { a: 1 });
+  let read = false;
+  // highWaterMark 0: pull runs only when a reader asks (the default pre-fills one chunk).
+  const advertised = new Response(new ReadableStream({ pull() { read = true; } }, { highWaterMark: 0 }), { headers: { 'content-length': '999' } });
+  await assert.rejects(fetchText('https://cl', { fetchImpl: once(advertised), maxBytes: 100, retries: 0 }), ResponseTooLargeError);
+  assert.equal(read, false, 'content-length over the cap is refused without reading');
+});
+
+test('a body that stalls after the headers times out instead of hanging', async () => {
+  const { res } = streamed(1_000_000, { stallAfter: 65536 });
+  await within(assert.rejects(fetchText('https://stall', { fetchImpl: once(res), timeout: 80, retries: 0 }),
+    (e) => e instanceof TimeoutError && e.timeoutMs === 80), 3000, 'stalled body');
+});
+
+test("the caller's signal abandons a body read after the headers", async () => {
+  const { res } = streamed(1_000_000, { stallAfter: 65536 });
+  const ctl = new AbortController();
+  const p = fetchText('https://slow', { fetchImpl: once(res), signal: ctl.signal, timeout: 0, retries: 0 });
+  setTimeout(() => ctl.abort(), 30);
+  await within(assert.rejects(p, (e) => e.name === 'AbortError'), 3000, 'aborted body');
+});
+
+test('the HttpError snippet reads a few KB of a huge error page, not all of it', async () => {
+  const { res, pulled } = streamed(20_000_000, { status: 500 });
+  await assert.rejects(fetchWithRetry('https://err', { fetchImpl: once(res), retries: 0 }),
+    (e) => e instanceof HttpError && e.status === 500 && e.body.length === 2048);
+  assert.ok(pulled() <= 2048 * 4 + 2 * 65536, `pulled ${pulled()} bytes for a 2 KB snippet`);
+});
+
+test('readTextCapped decodes UTF-8 split across chunks, allows an explicit Infinity, refuses a bad cap', async () => {
+  const bytes = new TextEncoder().encode('héllo — 🎉');
+  const body = new ReadableStream({ start(c) { for (const b of bytes) c.enqueue(new Uint8Array([b])); c.close(); } });
+  assert.equal(await readTextCapped(new Response(body)), 'héllo — 🎉');
+  assert.equal(await readTextCapped(new Response('abc'), { maxBytes: Infinity }), 'abc');
+  assert.equal(await readTextCapped(new Response('abc'), { maxBytes: 3 }), 'abc');
+  await assert.rejects(readTextCapped(new Response('abcd'), { maxBytes: 3 }), ResponseTooLargeError);
+  for (const bad of [NaN, -1, '5', null]) {
+    await assert.rejects(readTextCapped(new Response('x'), { maxBytes: bad }), TypeError, String(bad));
+    await assert.rejects(fetchText('https://x', { fetchImpl: once(new Response('x')), maxBytes: bad }), TypeError, String(bad));
+  }
+  // A test double with no stream is read whole, then judged.
+  assert.equal(await readTextCapped(makeResponse('plain')), 'plain');
+  await assert.rejects(readTextCapped(makeResponse('toolong'), { maxBytes: 3 }), ResponseTooLargeError);
 });
