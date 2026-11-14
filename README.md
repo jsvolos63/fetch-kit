@@ -41,7 +41,18 @@ try {
   transient classification + `Retry-After`. Resolves an **ok** `Response` (a
   non-ok status throws a typed `HttpError`) or throws after exhausting retries.
   A non-transient failure (404, abort) throws on the first attempt.
-- **`fetchJson(url, opts)` / `fetchText(url, opts)`** — `fetchWithRetry` + parse.
+- **`fetchJson(url, opts)` / `fetchText(url, opts)`** — `fetchWithRetry` + a
+  capped, deadline-bound body read + parse. Since v0.4.0 (FAM-8) the body is
+  streamed and counted: past `opts.maxBytes` (default `MAX_RESPONSE_BYTES`,
+  5 MB; `Infinity` opts out, visibly) the read stops, the stream is cancelled
+  and a `ResponseTooLargeError` is thrown, never retried. A content-length
+  over the cap is refused before reading. The body also gets its own
+  `opts.timeout` deadline, started at the headers — the request timeout ends
+  when `fetch` resolves, so a body that stalled after the headers used to hang
+  for ever — and the caller's `signal` still abandons it.
+- **`readTextCapped(res, { maxBytes, timeout, signal, url })`** — that body
+  read on its own, for a caller holding a `Response` from `fetchWithRetry` or
+  `fetchWithTimeout`.
 
 Options (all optional): `timeout` (default 12000), `retries` (default 2),
 `retryStatuses` (default `[429, 502, 503, 504]`), `retryBaseMs` (default 400),
@@ -63,6 +74,11 @@ are injectable seams for tests. Backoff is
   ship it to a log sink or an error reporter, and prefer `.status` for
   anything a user or a logfile sees. `.url` carries the query string and
   deserves the same care.
+- **`ResponseTooLargeError`** (v0.4.0) — `.url`, `.maxBytes`, `.tooLarge`
+  (`true`, the tag @jfs/netlify-kit's capped read uses).
+- **`HttpError.body` is read capped** since v0.4.0: at most four bytes per
+  character of the 2 KB snippet, then the stream is cancelled. It used to
+  buffer the whole error page to keep 2 KB of it.
 - **`TimeoutError`** — `.url`, `.timeoutMs`. Never retried by default (a timeout
   means a slow upstream; retrying compounds latency — flip it back on with
   `retryOn` if you want the old Weather behavior).

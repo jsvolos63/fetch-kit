@@ -71,6 +71,25 @@ Two rules carried over intact:
 of the kit, resolves `localStorage` at call time and touches no global at
 import time, so `"sideEffects": false` stays honest.
 
+## v0.4.0: every body read is capped and has a deadline (FAM-8)
+
+`fetchJson` / `fetchText` go through `readTextCapped`: a streamed read counted
+against `maxBytes` (5 MB by default), with its OWN `timeout` deadline started
+at the headers, and the caller's `signal` honoured to the end. Two things not
+to undo:
+
+- **The deadline is separate from fetchWithTimeout's.** That timer ends when
+  `fetch` resolves, at the headers, by design (a caller that wants the raw
+  Response may read it however it likes). Folding the body into it would
+  change `fetchWithTimeout`'s contract for market-monitor and FlightCheck;
+  extending it silently is what left a stalled body unbounded before.
+- **A too-large body is never retried.** `ResponseTooLargeError` is not a
+  TypeError or an HttpError, so the default classifier says no: the same URL
+  would send the same body.
+
+`maxBytes: Infinity` is allowed and is the only way to read uncapped; a cap
+that is not a non-negative number throws, so a typo can't mean "no cap".
+
 ## Lint
 
 `npm run lint` (ESLint flat config, `eslint.config.mjs`); CI runs it. Every
