@@ -30,6 +30,6 @@ permissions:
 
 jobs:
   release:
-    uses: jsvolos63/vendor-cli/.github/workflows/release.yml@main
+    uses: jsvolos63/vendor-cli/.github/workflows/release.yml@df716ce2579aadc773215f87a184f2636283088d # v0.23.0
     with:
       title: '@jfs/fetch-kit'
